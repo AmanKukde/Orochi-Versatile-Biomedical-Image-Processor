@@ -14,22 +14,18 @@ def write_excel(excel_name='metric.xlsx', worksheet_name='VIF', column_index=0, 
     try:
         workbook = load_workbook(excel_name)
     except FileNotFoundError:
-    # 文件不存在，创建新的 Workbook
         workbook = Workbook()
 
-    # 获取或创建一个工作表
     if worksheet_name in workbook.sheetnames:
         worksheet = workbook[worksheet_name]
     else:
         worksheet = workbook.create_sheet(title=worksheet_name)
 
-    # 在指定列中插入数据
     column = get_column_letter(column_index + 1)
     for i, value in enumerate(data):
         cell = worksheet[column + str(i+1)]
         cell.value = value
 
-    # 保存文件
     workbook.save(excel_name)
 
 def evaluation_one(ir_name, vi_name, f_name):

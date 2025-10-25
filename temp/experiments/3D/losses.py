@@ -155,7 +155,7 @@ class LogMSELoss(nn.Module):
 
     def forward(self, input, target):
         mse_loss = self.mse(input, target)
-        log_mse_loss = torch.log(mse_loss + self.eps)  # 避免负无穷
+        log_mse_loss = torch.log(mse_loss + self.eps)
         return log_mse_loss
 
 class Grad(torch.nn.Module):

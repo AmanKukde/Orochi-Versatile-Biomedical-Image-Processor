@@ -147,7 +147,6 @@ def train(rank, world_size, gpu_ids, config, port):
 
                 loss.backward()
 
-                # 梯度裁剪
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 
                 optimizer.step()
@@ -168,7 +167,6 @@ def train(rank, world_size, gpu_ids, config, port):
                         vis_save_path = os.path.join(save_dir, 'visualizations', f'epoch_{epoch}_iter_{global_step}_loss_{loss}')
                         utils.visualize_logits(logits, output_folder=vis_save_path, verbose=False)
 
-                    # 记录损失到 wandb
                     if config.wandb_key:
                         wandb.log({
                             'Loss/train': loss.item(),
@@ -176,7 +174,6 @@ def train(rank, world_size, gpu_ids, config, port):
                             **{f'Loss/{key}': value.item() for key, value in flat_aux_loss.items()}
                         }, step=global_step)
 
-                    # 记录损失
                     writer.add_scalar('Loss/train', loss.item(), global_step)
                     for key, value in flat_aux_loss.items():
                         writer.add_scalar(f'Loss/{key}', value.item(), global_step)
@@ -191,7 +188,6 @@ def train(rank, world_size, gpu_ids, config, port):
         if rank == 0:
             print(f'Epoch {epoch} loss {loss_all.avg:.4f}')
             
-            # 保存检查点
             is_best = loss_all.avg < best_loss
             best_loss = min(loss_all.avg, best_loss)
             save_checkpoint({
@@ -249,23 +245,21 @@ def get_orochi_B_config():
     config.save_steps = 10
     #path
     config.checkpoint_dir = None
-    config.data_dir = '/root/daigaole/data/HIPSC_1T/'
-    config.save_dir = f'/root/daigaole/outputs/foundation_mamba_biomed/{time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())}/'
-    # wandb 配置
-    config.wandb_key = '97e85839e66b93ae618156c2b468f818d4348745'  # 设置为你的 wandb API 密钥，或者保持为 None
+    config.data_dir = './data/HIPSC_1T/'
+    config.save_dir = f'./outputs/{time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())}/'
+    config.wandb_key = None
     config.wandb_project = "Orochi"
     
     return config
 
 def main():
     config = get_orochi_B_config()
-    num_gpus = len(config.gpu_ids)  #使用所有选定的卡
+    num_gpus = len(config.gpu_ids) 
     
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, config.gpu_ids))
-    os.environ['GLOO_SOCKET_IFNAME'] = 'eth0'  # 或者您系统中实际的网络接口名称
+    os.environ['GLOO_SOCKET_IFNAME'] = 'eth0'  
     port = get_free_port()
     
-    # 注意：这里 gpu_ids 参数传递的是 [0, 1, 2, 3, 4, 5]，因为 CUDA_VISIBLE_DEVICES 会重新映射设备ID
     mp.spawn(train, args=(num_gpus, list(range(num_gpus)), config, port), nprocs=num_gpus, join=True)
 
 if __name__ == "__main__":

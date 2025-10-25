@@ -92,8 +92,6 @@ def ssim(X,
          win=None,
          K=(0.01, 0.03),
          nonnegative_ssim=False):
-    # 输出的是灰度图像，其shape是[H, W]
-    # 需要扩展为 [B, C, H, W]
     X = TF.to_tensor(X).unsqueeze(0).unsqueeze(0) * 255.0
     Y = TF.to_tensor(Y).unsqueeze(0).unsqueeze(0) * 255.0
     if not X.shape == Y.shape:
@@ -140,8 +138,7 @@ def ms_ssim(
         weights=None,
         K=(0.01, 0.03)
     ):
-    # 输出的是灰度图像，其shape是[H, W]
-    # 需要扩展为 [B, C, H, W]
+
     X = TF.to_tensor(X).unsqueeze(0).unsqueeze(0) * 255.0
     Y = TF.to_tensor(Y).unsqueeze(0).unsqueeze(0) * 255.0
     if not X.shape == Y.shape:

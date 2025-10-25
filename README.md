@@ -38,7 +38,8 @@ python -c "import site; print(site.getsitepackages())"
 
 ## Pretrain Orochi
 
-
+Dataset:
+Checkpoint:
 
 
 

@@ -39,13 +39,13 @@ def get_mamba_B_config():
     config.patch_norm = True      
     config.use_checkpoint = False
     
-    config.data_dir = '/root/daigaole/data/HIPSC/split/'
+    config.data_dir = './data/HIPSC/split/'
     config.batch_size = 2
     config.use_checkpoint = False
     config.checkpoint_num=0
     config.device=None
     config.dtype=None
-    config.num_workers = 4  # 添加这一行来指定num_workers
+    config.num_workers = 4 
     return config
 
 if __name__ == "__main__":

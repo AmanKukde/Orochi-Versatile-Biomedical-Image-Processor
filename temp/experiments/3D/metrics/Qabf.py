@@ -68,17 +68,14 @@ def get_Qabf(pA, pB, pF):
     h3 = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]).astype(np.float32)
 
     # if y is the response to h1 and x is the response to h3;then the intensity is sqrt(x^2+y^2) and  is arctan(y/x);
-    # 如果y对应h1，x对应h2，则强度为sqrt(x^2+y^2)，方向为arctan(y/x)
 
     strA = pA
     strB = pB
     strF = pF
 
-    # 数组旋转180度
     def flip180(arr):
         return np.flip(arr)
 
-    # 相当于matlab的Conv2
     def convolution(k, data):
         k = flip180(k)
         data = np.pad(data, ((1, 1), (1, 1)), 'constant', constant_values=(0, 0))
@@ -102,7 +99,6 @@ def get_Qabf(pA, pB, pF):
         #             aA[i, j] = math.atan(SAy[i, j] / SAx[i, j])
         return gA, aA
 
-    # 对strB和strF进行相同的操作
     gA, aA = getArray(strA)
     gB, aB = getArray(strB)
     gF, aF = getArray(strF)
@@ -123,7 +119,6 @@ def get_Qabf(pA, pB, pF):
     QAF = getQabf(aA, gA, aF, gF)
     QBF = getQabf(aB, gB, aF, gF)
 
-    # 计算QABF
     deno = np.sum(gA + gB)
     nume = np.sum(np.multiply(QAF, gA) + np.multiply(QBF, gB))
     output = nume / deno

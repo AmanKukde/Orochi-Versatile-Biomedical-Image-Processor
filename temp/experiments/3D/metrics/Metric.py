@@ -6,11 +6,8 @@ import math
 from ssim import ssim, ms_ssim
 
 def EN_function(image_array):
-    # 计算图像的直方图
     histogram, bins = np.histogram(image_array, bins=256, range=(0, 255))
-    # 将直方图归一化
     histogram = histogram / float(np.sum(histogram))
-    # 计算熵
     entropy = -np.sum(histogram * np.log2(histogram + 1e-7))
     return entropy
 

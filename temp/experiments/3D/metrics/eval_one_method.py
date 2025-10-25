@@ -14,22 +14,18 @@ def write_excel(excel_name='metric.xlsx', worksheet_name='VIF', column_index=0, 
     try:
         workbook = load_workbook(excel_name)
     except FileNotFoundError:
-    # 文件不存在，创建新的 Workbook
         workbook = Workbook()
 
-    # 获取或创建一个工作表
     if worksheet_name in workbook.sheetnames:
         worksheet = workbook[worksheet_name]
     else:
         worksheet = workbook.create_sheet(title=worksheet_name)
 
-    # 在指定列中插入数据
     column = get_column_letter(column_index + 1)
     for i, value in enumerate(data):
         cell = worksheet[column + str(i+1)]
         cell.value = value
         
-    # 保存文件
     workbook.save(excel_name)
 
 def evaluation_one(ir_name, vi_name, f_name):
@@ -112,7 +108,6 @@ if __name__ == '__main__':
         filename_list.append(item)
         eval_bar.set_description("{} | {}".format(Method, item))
     if with_mean:
-    # 添加均值
         EN_list.append(np.mean(EN_list))
         MI_list.append(np.mean(MI_list))
         SF_list.append(np.mean(SF_list))
@@ -129,7 +124,6 @@ if __name__ == '__main__':
         MS_SSIM_list.append(np.mean(MS_SSIM_list))
         filename_list.append('mean')
 
-        ## 添加标准差
         EN_list.append(np.std(EN_list))
         MI_list.append(np.std(MI_list))
         SF_list.append(np.std(SF_list))
@@ -146,7 +140,6 @@ if __name__ == '__main__':
         MS_SSIM_list.append(np.std(MS_SSIM_list))
         filename_list.append('std')
 
-    ## 保留三位小数
     EN_list = [round(x, 3) for x in EN_list]
     MI_list = [round(x, 3) for x in MI_list]
     SF_list = [round(x, 3) for x in SF_list]

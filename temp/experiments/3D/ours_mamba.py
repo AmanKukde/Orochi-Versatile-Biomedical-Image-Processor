@@ -702,9 +702,8 @@ class Head(nn.Sequential):
             self.apply_sparse_mask(conv3d, sparsity)
         self.add_module('conv', conv3d)
     def apply_sparse_mask(self, conv3d, sparsity):
-        # 随机生成掩码，掩码值小于sparsity时为True
         mask = torch.rand(conv3d.weight.shape).to(conv3d.weight.device) < sparsity
-        conv3d.weight.data *= mask.float()  # 将权重乘上掩码以应用稀疏性
+        conv3d.weight.data *= mask.float()
 
 class reg_decoder(nn.Module):
     def __init__(self, config):
@@ -813,11 +812,9 @@ class Seg_prompt_encoder(nn.Module):
     def __init__(self, num_classes: int, embed_dim: int):
         super().__init__()
         self.class_embedding = nn.Embedding(num_classes, embed_dim)
-        # # 可选：增加全连接层进一步调整嵌入
         # self.fc = nn.Linear(embed_dim, embed_dim)
         
     def forward(self, class_ids: torch.Tensor) -> torch.Tensor:
-        # 生成类别嵌入 [B, embed_dim]
         prompt_embed = self.class_embedding(class_ids)
         # prompt_embed = self.fc(prompt_embed)
         return prompt_embed
@@ -839,11 +836,9 @@ class SpatialTransformer(nn.Module):
         new_locs = grid + flow
         shape = flow.shape[2:]
 
-        # 将网格值归一化到 [-1, 1] 范围内
         for i in range(len(shape)):
             new_locs[:, i, ...] = 2 * (new_locs[:, i, ...] / (shape[i] - 1) - 0.5)
 
-        # 调整通道维度到最后一个位置
         if len(shape) == 2:
             new_locs = new_locs.permute(0, 2, 3, 1)
             new_locs = new_locs[..., [1, 0]]
@@ -879,37 +874,31 @@ class Orochi_Pretrain(nn.Module):
             
     
     def forward(self, raw):
-        # 变形退化
         reg_source, reg_flow = self.deform(raw)
         x = torch.cat([reg_source, raw], dim=1)
         out_feats = self.encoder(x)
         reg_inv_flow = self.reg_decoder(out_feats)
         reged = self.spatial_trans(reg_source, reg_inv_flow)
         # grid_img = self.grid_img.expand(raw.shape[0], -1, -1, -1, -1)
-        # # 应用变形场到网格图像
         # deformed_grid = self.spatial_trans(grid_img, reg_flow)
         # restored_grid = self.spatial_trans(grid_img, reg_inv_flow)
         
-        # 掩码退化
         fus_source_A = self.mask(raw)
         fus_source_B = self.mask(raw)
         x = torch.cat([fus_source_A, fus_source_B], dim=1)
         out_feats = self.encoder(x)
         fused = self.fus_decoder(out_feats)
         
-        # 下采样退化
         SR_source = self.downsample(raw)
         x = torch.cat([SR_source, SR_source], dim=1)
         out_feats = self.encoder(x)        
         SRed = self.SR_decoder(out_feats)
         
-        # 噪声退化
         IR_source = self.noise(raw)
         x = torch.cat([IR_source, IR_source], dim=1)
         out_feats = self.encoder(x)
         IRed = self.IR_decoder(out_feats)
         
-        # 输出结果
         logits = {
             'raw': raw.detach().cpu().numpy(),
             'reg': {
@@ -935,7 +924,6 @@ class Orochi_Pretrain(nn.Module):
             }
         }
         
-        # 计算损失
         aux_loss = {
             'mse': {
                 'reg': self.losses['mse'][0](reged, raw) * self.losses['mse'][1],
@@ -960,23 +948,17 @@ class Orochi_Pretrain(nn.Module):
 
     def create_grid_image(self, grid_spacing=4, line_width=1):
         """
-        创建一个网格图像
-        shape: 元组，表示图像的形状 (depth, height, width)
-        grid_spacing: 网格线之间的间距
-        line_width: 网格线的宽度
+        shape:  (depth, height, width)
         """
         depth, height, width = self.grid_size
         grid = torch.zeros((1, 1, depth, height, width), dtype=torch.float32)
         
-        # 创建水平线
         for y in range(0, height, grid_spacing):
             grid[:, :, :, y:y+line_width, :] = 1
         
-        # 创建垂直线
         for x in range(0, width, grid_spacing):
             grid[:, :, :, :, x:x+line_width] = 1
         
-        # 创建深度方向的线
         for z in range(0, depth, grid_spacing):
             grid[:, :, z:z+line_width, :, :] = 1
         
@@ -985,26 +967,20 @@ class Orochi_Pretrain(nn.Module):
     def deform(self, image):
         b, c, d, h, w = image.shape
         
-        # 生成低分辨率的形变场
         lowres_d, lowres_h, lowres_w = d//2, h//2, w//2
         
-        # 生成低分辨率的形变场
         flow = self.generate_natural_deformation_field(b, lowres_d, lowres_h, lowres_w, device=image.device)
         
-        # 应用非线性变换增强形变的自然性
-        flow = torch.tanh(flow)*0.6  # 使用tanh函数限制形变幅度，并缩放到合适范围
+        flow = torch.tanh(flow)*0.6 
         
-        # 应用空间变化的高斯滤波
-        sigma_range = [1.5, 3.5]  # 高斯滤波的sigma范围
+        sigma_range = [1.5, 3.5]
         flow = self.spatially_varying_gaussian_filter(flow, sigma_range)
         
-        # 上采样到原始分辨率
         flow = F.interpolate(flow, size=(d, h, w), mode='trilinear', align_corners=True)
         
         return self.spatial_trans(image, flow), flow
 
     def generate_natural_deformation_field(self, b, d, h, w, device):
-        # 使用多尺度Perlin噪声生成更自然的形变场
         def perlin_noise(coords, octaves=4, persistence=0.5):
             noise = torch.zeros(b, d, h, w, device=device)
             frequency = 1
@@ -1027,7 +1003,7 @@ class Orochi_Pretrain(nn.Module):
             perlin_noise(coords)
         ], dim=1)
 
-        return flow - flow.mean(dim=(2, 3, 4), keepdim=True)  # 中心化流场
+        return flow - flow.mean(dim=(2, 3, 4), keepdim=True)
 
     def simplex_noise(self, x):
         b, d, h, w, _ = x.shape
@@ -1055,10 +1031,8 @@ class Orochi_Pretrain(nn.Module):
             return torch.exp(-x**2 / (2*sigma**2))
         b, c, d, h, w = input.shape
         
-        # 为每个空间位置生成不同的sigma值
         sigma_map = torch.rand(b, 1, d, h, w, device=input.device) * (sigma_range[1] - sigma_range[0]) + sigma_range[0]
         
-        # 创建最大kernel size的3D kernel
         max_kernel_size = int(4*sigma_range[1]+1)
         kernel_x = gaussian_kernel_1d(sigma_range[1], max_kernel_size).to(input.device)
         kernel_y = gaussian_kernel_1d(sigma_range[1], max_kernel_size).to(input.device)
@@ -1066,7 +1040,6 @@ class Orochi_Pretrain(nn.Module):
         kernel_3d = (kernel_x.view(-1, 1, 1) * kernel_y.view(1, -1, 1) * kernel_z.view(1, 1, -1))
         kernel_3d = kernel_3d.view(1, 1, *kernel_3d.shape)
         
-        # 对每个位置应用不同的高斯滤波
         output = torch.zeros_like(input)
         for i in range(c):
             channel_input = input[:, i:i+1]
@@ -1075,7 +1048,6 @@ class Orochi_Pretrain(nn.Module):
                 kernel_3d.expand(1, -1, -1, -1, -1),
                 groups=1
             )
-            # 根据sigma_map调整输出
             output[:, i:i+1] = channel_input + (channel_output - channel_input) * (sigma_map - sigma_range[0]) / (sigma_range[1] - sigma_range[0])
         
         return output
@@ -1121,7 +1093,6 @@ class Orochi_Pretrain(nn.Module):
 
     def downsample(self, image):
         
-        # 1. 降低分辨率
         scale_factor = random.uniform(0.25, 0.75)
         down = F.interpolate(image, scale_factor=scale_factor, mode='trilinear', align_corners=True)
         
@@ -1129,7 +1100,6 @@ class Orochi_Pretrain(nn.Module):
         noise = torch.randn_like(down) * noise_level
         down = down + noise
         
-        # 5. 上采样回原始大小
         up = F.interpolate(down, size=image.shape[2:], mode='trilinear', align_corners=True)
         
         sigma_range = [0.25, 1.0]
@@ -1139,34 +1109,27 @@ class Orochi_Pretrain(nn.Module):
 
 
     def noise(self, image):
-        # 添加高斯噪声（模拟低光照条件下的光子噪声）
         noise_level = random.uniform(0.075, 0.15)  # 增加噪声水平
         noise = torch.randn_like(image) * noise_level
         noisy = image + noise
         
-        # 确保 noisy >= 0，以避免 lambda_poisson 为负
         noisy = torch.clamp(noisy, min=0.0)
         
-        # 模拟光子计数的泊松分布噪声
         lambda_poisson = noisy * 255  # 假设像素值范围为0-1，转换为0-255
         noisy = torch.poisson(lambda_poisson) / 255.0
         
-        # 添加椒盐噪声
         salt_vs_pepper = 0.5  # 盐噪声比例
         amount = random.uniform(0.01, 0.05)  # 椒盐噪声的总比例
         
-        # 生成噪声掩码
         noise_mask = torch.rand_like(noisy)
         
-        # 加盐噪声（白点）
         salt = (noise_mask < amount * salt_vs_pepper)
         noisy[salt] = 1
         
-        # 加椒噪声（黑点）
         pepper = (noise_mask > 1 - amount * (1 - salt_vs_pepper))
         noisy[pepper] = 0
         
-        return torch.clamp(noisy, 0, 1)  # 确保像素值在 [0, 1] 范围内
+        return torch.clamp(noisy, 0, 1) 
 
 class Orochi_Finetune(nn.Module):
     def __init__(self, config):
@@ -1201,9 +1164,6 @@ class Orochi_Finetune(nn.Module):
         elif self.finetune_mode in ['fuse', 'fuse_unsup']:
             x = source
             out_feats = self.encoder(x)
-            # source = torch.cat([source1, source2], dim=1) 
-            # and shape of source1 and source2 are the same
-            # Note that source1 and source2 might be multi dimensional
         elif self.finetune_mode in ['seg']:
             (x_img, x_prompt) = source
             # x = torchcat([source, prompt], dim=1)
@@ -1216,10 +1176,9 @@ class Orochi_Finetune(nn.Module):
         out = self.decoder(out_feats)
         if self.finetune_mode == 'reg':
             reged_source = self.spatial_trans(source, out)
-            # 计算损失
             aux_loss = {}
             for loss_name, (loss_fn, weight) in self.losses.items():
-                if weight > 0:  # 只计算权重不为0的损失
+                if weight > 0: 
                     if loss_name == 'grad':
                         aux_loss[loss_name] = loss_fn(out, target) * weight
                     elif loss_name == 'dice':
@@ -1231,10 +1190,9 @@ class Orochi_Finetune(nn.Module):
                 'registered': reged_source
             }
         elif self.finetune_mode in ['IR', 'SR', 'fuse', 'proj', 'den', 'seg']:
-            # 计算损失
             aux_loss = {}
             for loss_name, (loss_fn, weight) in self.losses.items():
-                if weight > 0:  # 只计算权重不为0的损失
+                if weight > 0:  
                     if loss_name == 'dice':
                         pass
                     else:
@@ -1246,7 +1204,7 @@ class Orochi_Finetune(nn.Module):
             aux_loss = {}
             source1, source2 = torch.split(source, source.shape[1] // 2, dim=1)  # 按通道分割
             for loss_name, (loss_fn, weight) in self.losses.items():
-                if weight > 0:  # 只计算权重不为0的损失
+                if weight > 0:
                     if loss_name == 'dice':
                         pass
                     else:

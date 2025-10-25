@@ -373,7 +373,7 @@ def get_orochi_B_config():
 
     #path
     config.checkpoint_dir = './checkpoints/3D/IR/checkpoint.pth.tar'
-    config.data_dir = './data_UniFMIR/preprocessed3D'  # 修改为预处理数据的路径
+    config.data_dir = './data_UniFMIR/preprocessed3D' 
     config.save_dir = f'./Experiment/ISOIR3D/{time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())}/'
 
     # Config for wandb if needed

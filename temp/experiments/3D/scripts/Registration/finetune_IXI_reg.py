@@ -88,7 +88,6 @@ def train(rank, world_size, gpu_ids, config, port):
             best_dsc = checkpoint['best_DSC']
             global_step = start_epoch * len(train_loader)  # 估算 global_step
             
-            # 处理 'module.' 前缀
             state_dict = checkpoint['state_dict']
             if "module." in list(state_dict.keys())[0] and "module." not in list(model.state_dict().keys())[0]:
                 state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
@@ -102,24 +101,19 @@ def train(rank, world_size, gpu_ids, config, port):
         else:
             print(f"=> no checkpoint found at '{config.checkpoint_dir}'")     
     elif config.checkpoint_dir:
-        # 这部分代码保持不变
         print("##################Checkpoint found##################") 
         checkpoint = torch.load(config.checkpoint_dir, map_location=device)
         checkpoint_state_dict = checkpoint['state_dict']
 
-        # 处理 'module.' 前缀
         if "module." in list(checkpoint_state_dict.keys())[0] and "module." not in list(model.state_dict().keys())[0]:
             checkpoint_state_dict = {k.replace("module.", ""): v for k, v in checkpoint_state_dict.items()}
         elif "module." not in list(checkpoint_state_dict.keys())[0] and "module." in list(model.state_dict().keys())[0]:
             checkpoint_state_dict = {f"module.{k}": v for k, v in checkpoint_state_dict.items()}
 
-        # 只选择指定模块的参数
         selected_state_dict = {k: v for k, v in checkpoint_state_dict.items() 
                             if any(module in k for module in config.load_modules['load'])}
-        # 加载选定的参数
         model.load_state_dict(selected_state_dict, strict=False)
         print(f"Loaded {config.load_modules['load']} from checkpoint: {config.checkpoint_dir}") 
-        # 解冻指定模块
         for name, param in model.named_parameters():
             for froze_module in config.load_modules['froze']:
                 for unfroze_module in config.load_modules['unfroze_from_froze']:
@@ -136,7 +130,6 @@ def train(rank, world_size, gpu_ids, config, port):
     if rank == 0:
         print(f'Configuration: {config}')
         MODELS.print_model_details(model)
-        # 初始化 wandb
         if config.wandb_key:
             wandb.login(key=config.wandb_key)
             wandb.init(project=config.wandb_project,
@@ -187,7 +180,6 @@ def train(rank, world_size, gpu_ids, config, port):
                         postfix_dict[key] = f'{value.item():.4f}'
                     progress_bar.set_postfix(postfix_dict)
 
-                    # 记录损失到 wandb
                     if config.wandb_key:
                         wandb.log({
                             'Loss/train': loss.item(),
@@ -195,7 +187,6 @@ def train(rank, world_size, gpu_ids, config, port):
                             **{f'Loss/{key}': value.item() for key, value in flat_aux_loss.items()}
                         }, step=global_step)
 
-                    # 记录损失到 TensorBoard
                     writer.add_scalar('Loss/train', loss.item(), global_step)
                     for key, value in flat_aux_loss.items():
                         writer.add_scalar(f'Loss/{key}', value.item(), global_step)
@@ -223,7 +214,6 @@ def train(rank, world_size, gpu_ids, config, port):
                     dsc = utils.dice_val_VOI(deformed_seg.long(), target_seg.long())
                     eval_dsc.update(dsc.item(), target.size(0))
                     val_progress.set_postfix({'DSC': f'{dsc.item():.4f}', 'Avg DSC': f'{eval_dsc.avg:.4f}'})
-                    # 保存图像
                     plt.figure(figsize=(20, 16))
                     plt.subplot(141)
                     plt.imshow(source_seg[0, 0, 48].cpu().numpy(), cmap='gray')
@@ -259,14 +249,12 @@ def train(rank, world_size, gpu_ids, config, port):
                     plt.close()
             print(f'Epoch {epoch}, Best DSC {best_dsc}, Avg DSC {eval_dsc.avg}')
             
-            # 记录验证指标到 wandb
             if config.wandb_key:
                 wandb.log({
                     'Validation/Avg_DSC': eval_dsc.avg,
                     'Validation/Best_DSC': best_dsc
                 }, step=global_step)
 
-            # 保存检查点
             is_best = eval_dsc.avg > best_dsc
             best_dsc = max(eval_dsc.avg, best_dsc)
             utils.save_checkpoint({
@@ -309,24 +297,28 @@ def get_orochi_B_config():
     config.use_checkpoint = False
     #decoder
     config.decoder_bn = False
-    config.decoder_depthseparable = False
+    config.decoder_depthseparable = True # This means the decoder is light, if set False, the decoder is dense.
     config.decoder_mode = '3d'
     config.decoder_head_chan = 64
     #training
     config.if_resume = False
-    config.finetune_mode = 'reg' # 'reg', 'fus', 'SR', 'IR'
+    config.finetune_mode = 'reg'
     config.load_modules = {
-        'load': ['encoder'],
+        # This config is to just finetue decoder.
+        'load': ['encoder', 'decoder'],
         'froze': ['encoder'],
-        'unfroze_from_froze': ['norm', 'bias']
-        } 
+        'unfroze_from_froze': ['norm', 'bias'],
+        # This config is to finetue all, referring to "full" finetune in paper.
+        # 'froze': [],
+        # 'unfroze_from_froze': []
+    }  
     config.batch_size = 2
     config.lr = 0.0001
     config.weight_decay = 0.01
     config.warmup_ratio = 0.1
     config.warmup_start_factor = 0.01
     config.max_epoch = 301
-    config.gpu_ids = [0,1,2,3,4,5,6]
+    config.gpu_ids = [0]
     num_cpus = multiprocessing.cpu_count()
     config.num_workers = min(num_cpus * 2, 16)
     config.save_steps = 5
@@ -336,37 +328,27 @@ def get_orochi_B_config():
         "ncc": (losses.NCC_vxm(), 1.0),
         "grad": (losses.Grad3d(penalty='l2'), 1.0),
         "dice": (losses.DiceLoss(), 1.0),
-        # "mutual_info": (losses.MutualInformation(), 0.0),
-        # "local_mutual_info": (losses.localMutualInformation(), 0.0),
-        # "mind": (losses.MIND_loss(), 0.0),
-        # "pixel": (losses.PixelLoss3D(), 0.0),
-        # "maxgrad": (losses.MaxGradLoss3D(), 0.0),
-        # "maxpixel": (losses.MaxPixelLoss3D(), 0.0),
-        # "maxtoken": (losses.MaxGradTokenSelect3D(), 0.0),
     }
     #path
-    config.checkpoint_dir = '/root/daigaole/checkpoints/MambaULight_epoch_50.pth.tar'
-    config.train_dir = '/root/daigaole/data/IXI_data/Train/'
-    config.atlas_dir = '/root/daigaole/data/IXI_data/atlas.pkl'
-    config.val_dir = '/root/daigaole/data/IXI_data/Val/'
-    config.test_dir = '/root/daigaole/data/IXI_data/Test/'
-    config.save_dir = f'/root/daigaole/outputs/foundation_mamba_biomed/IXIREG/{time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())}/'
+    config.checkpoint_dir = './checkpoints/3D/Registration/checkpoint.pth.tar'
+    config.train_dir = './data_IXIReg/Train/'
+    config.atlas_dir = './data_IXIReg/atlas.pkl'
+    config.val_dir = './data_IXIReg/Val/'
+    config.test_dir = './data_IXIReg/Test/'
+    config.save_dir = f'./Experiment/IXIREG/{time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())}/'
     
-    # wandb 配置
-    config.wandb_key = '97e85839e66b93ae618156c2b468f818d4348745'  # 设置为你的 wandb API 密钥，或者保持为 None
+    config.wandb_key = None  
     config.wandb_project = "Orochi"
     
     return config
 
 def main():
     config = get_orochi_B_config()
-    num_gpus = len(config.gpu_ids)  #使用所有选定的卡
-    
+    num_gpus = len(config.gpu_ids)
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, config.gpu_ids))
-    os.environ['GLOO_SOCKET_IFNAME'] = 'eth0'  # 或者您系统中实际的网络接口名称
+    os.environ['GLOO_SOCKET_IFNAME'] = 'eth0' 
     port = utils.get_free_port()
     
-    # 注意：这里 gpu_ids 参数传递的是 [0, 1, 2, 3, 4, 5]，因为 CUDA_VISIBLE_DEVICES 会重新映射设备ID
     mp.spawn(train, args=(num_gpus, list(range(num_gpus)), config, port), nprocs=num_gpus, join=True)
 
 if __name__ == "__main__":

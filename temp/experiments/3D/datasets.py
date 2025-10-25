@@ -34,35 +34,29 @@ class Pretrain_Dataset(Dataset):
     def __getitem__(self, idx):
         sample_path = os.path.join(self.root_dir, self.samples[idx])
         
-        # 读取预处理后的图像
         if sample_path.endswith('.tiff'):
             raw_image = tifffile.imread(sample_path)
         elif sample_path.endswith('.npy'):
             raw_image = np.load(sample_path)
         else:
-            raise ValueError(f"不支持的文件格式: {sample_path}")
+            raise ValueError(f"Unknown: {sample_path}")
         
-        # 转换为 PyTorch tensor 并添加通道维度
         image_tensor = torch.from_numpy(raw_image).float().unsqueeze(0)
         
-        # 归一化到 0-1
         image_tensor = (image_tensor - image_tensor.min()) / (image_tensor.max() - image_tensor.min())
         
-        # 执行上采样
         image_tensor = self.upsample(image_tensor)
         
         return image_tensor
 
     def upsample(self, image_tensor):
-        d, h, w = image_tensor.shape[1:]  # 注意：现在shape是(C, D, H, W)
+        d, h, w = image_tensor.shape[1:]  # shape(C, D, H, W)
         td, th, tw = self.img_size
 
-        # 计算缩放因子
         d_factor = max(1, td / d)
         h_factor = max(1, th / h)
         w_factor = max(1, tw / w)
 
-        # 如果需要上采样
         if d_factor > 1 or h_factor > 1 or w_factor > 1:
             image_tensor = F.interpolate(image_tensor.unsqueeze(0), 
                                          size=(int(d*d_factor), int(h*h_factor), int(w*w_factor)),
@@ -75,7 +69,6 @@ def random_crop(image_tensor, target_size):
     _, d, h, w = image_tensor.shape
     td, th, tw = target_size
 
-    # 随机裁剪
     if d > td:
         start_d = torch.randint(0, d - td + 1, (1,)).item()
         image_tensor = image_tensor[:, start_d:start_d+td]
@@ -86,7 +79,6 @@ def random_crop(image_tensor, target_size):
         start_w = torch.randint(0, w - tw + 1, (1,)).item()
         image_tensor = image_tensor[:, :, :, start_w:start_w+tw]
 
-    # 确保输出尺寸正确
     image_tensor = F.interpolate(image_tensor.unsqueeze(0), size=target_size, mode='trilinear', align_corners=False).squeeze(0)
 
     return image_tensor
@@ -321,19 +313,13 @@ class OASISBrainInferDataset(Dataset):
 
 class ISOLiverDataset(Dataset):
     def __init__(self, config, is_train=True):
-        """
-        Args:
-            config: 配置对象
-            is_train: 是否为训练模式
-        """
+
         self.data_dir = config.data_dir
         self.is_train = is_train
         
-        # 加载数据集信息
         info = np.load(os.path.join(self.data_dir, 'dataset_info.npy'), allow_pickle=True).item()
         self.original_shape = info['original_test_shape'] if not is_train else None
         
-        # 获取文件列表
         if is_train:
             self.file_list = sorted(glob.glob(os.path.join(self.data_dir, 'train', 'cluster_*.npz')))
         else:
@@ -341,13 +327,11 @@ class ISOLiverDataset(Dataset):
             
         print(f"{'Train' if is_train else 'Test'} dataset initialized with {len(self.file_list)} samples")
         
-        # 加载第一个文件以获取数据形状
         sample_data = np.load(self.file_list[0])
         source_shape = sample_data['source'].shape
         print(f"Original data shape: {source_shape}")
         
         if not is_train:
-            # 仅测试集需要patch坐标信息
             self.patch_coords = []
             for file_path in self.file_list:
                 data = np.load(file_path)
@@ -358,7 +342,6 @@ class ISOLiverDataset(Dataset):
         source = data['source']
         target = data['target']
             
-        # 转换为tensor并添加维度
         source = torch.from_numpy(source).float()
         target = torch.from_numpy(target).float()
         
@@ -390,25 +373,22 @@ class FATFusionDataset(Dataset):
         source2 = item[1, :, :, :] 
         target = item[2, :, :, :] 
         
-        # 归一化
         source1 = (source1 - source1.min()) / (source1.max() - source1.min()) if source1.max() != source1.min() else np.zeros_like(source1)
         source2 = (source2 - source2.min()) / (source2.max() - source2.min()) if source2.max() != source2.min() else np.zeros_like(source2)
         target = (target - target.min()) / (target.max() - target.min()) if target.max() != target.min() else np.zeros_like(target)
 
-        # 调整维度顺序从 (H, W, D) -> (D, H, W)
-        source1 = np.transpose(source1, (2, 0, 1))  # 变成 (D, H, W)
-        source2 = np.transpose(source2, (2, 0, 1))  # 变成 (D, H, W)
-        target = np.transpose(target, (2, 0, 1))    # 变成 (D, H, W)
+        source1 = np.transpose(source1, (2, 0, 1))  
+        source2 = np.transpose(source2, (2, 0, 1))
+        target = np.transpose(target, (2, 0, 1)) 
 
-        source1 = torch.tensor(source1, dtype=torch.float32).unsqueeze(0)  # 变成 (1, D, H, W)
-        source2 = torch.tensor(source2, dtype=torch.float32).unsqueeze(0)  # 变成 (1, D, H, W)
-        target = torch.tensor(target, dtype=torch.float32).unsqueeze(0)    # 变成 (1, D, H, W)
+        source1 = torch.tensor(source1, dtype=torch.float32).unsqueeze(0) 
+        source2 = torch.tensor(source2, dtype=torch.float32).unsqueeze(0)  
+        target = torch.tensor(target, dtype=torch.float32).unsqueeze(0) 
 
         
         # source1 = source1.repeat(1,4,1,1)
         # source2 = source2.repeat(1,4,1,1)
         # target = target.repeat(1,4,1,1)
-        # 返回三部分数据
         return source1, source2, target
 
 class InverseSRData(Dataset):
@@ -434,48 +414,23 @@ class InverseSRData(Dataset):
         else:
             item = np.load(os.path.join(self.data_dir, f'val_data_{self.down_factor}x_{idx}.npy'))
 
-        # 在 NumPy 中完成维度调整
         source = item[0].transpose(1, 0, 2)[np.newaxis, :, :, :]  # (1, D, H, W)
         target = item[1].transpose(1, 0, 2)[np.newaxis, :, :, :]  # (1, D, H, W)
 
-        # 最后转换为 PyTorch 张量
         source = torch.from_numpy(source).float()
         target = torch.from_numpy(target).float()
 
         return source, target
-    # def __getitem__(self, idx):
-    #     if self.is_train:
-    #         item = np.load(os.path.join(self.config.data_dir, f'train_data_{self.config.down_factor}x_{idx}.npy'))
-    #     else:
-    #         item = np.load(os.path.join(self.config.data_dir, f'val_data_{self.config.down_factor}x_{idx}.npy'))
-    #     # item = self.data[idx]  #  (2, H, W, D)
-    #     source = torch.tensor(item[0, :, :, :])
-    #     target = torch.tensor(item[1, :, :, :])
 
-    #     # 调整维度顺序从 (H, W, D) -> (D, H, W)
-    #     source = source.permute(2, 0, 1)  # 变成 (D, H, W)
-    #     target = target.permute(2, 0, 1)  # 变成 (D, H, W)
-
-    #     source = source.float().unsqueeze(0)  # 确保数据类型，并变成 (1, D, H, W)
-    #     target = target.float().unsqueeze(0)  # 确保数据类型，并变成 (1, D, H, W)
-
-    #     # 返回数据
-    #     return source, target
 
 class ProjFlywingDataset(Dataset):
     def __init__(self, config, is_train=True):
-        """
-        Args:
-            config: 配置对象，包含数据路径、补丁大小等信息
-            is_train: 是否为训练模式
-            condition: 测试数据的条件编号
-        """
+
         self.config = config
         self.is_train = is_train
         self.condition = config.condition
         self.iso = ['Projection_Flywing']
 
-        # 数据加载
         if self.is_train:
             self._load_train_data()
         else:
@@ -484,35 +439,28 @@ class ProjFlywingDataset(Dataset):
         print(f"{'Train' if is_train else 'Test'} dataset initialized with {self.lenth} samples")
 
     def _load_train_data(self):
-        """加载训练数据"""
         datapath = f"{self.config.data_dir}/train_data/my_training_data.npz"
         datapath2 = f"{self.config.data_dir}/train_data/data_label.npz"
 
-        # X1, Y1 = self._split_patches(*self._load_npz_data(datapath))
         X1, Y1 = self._load_npz_data(datapath)
-        # X2, Y2 = self._load_training_data(datapath2, axes='SCZYX')
 
-        # self.nm_lr = np.concatenate([X1, X2], axis=0)
-        # self.nm_hr = np.concatenate([Y1, Y2], axis=0)
 
         self.nm_lr = X1
         self.nm_hr = Y1
         self.lenth = len(self.nm_lr)
 
     def _load_test_data(self):
-        """加载测试数据"""
         dir_lr = f"{self.config.data_dir}/test_data/"
         self.nm_lr = sorted(glob.glob(f"{dir_lr}Input/C{self.condition}/*.tif"))
         self.nm_hr = sorted(glob.glob(f"{dir_lr}GT/C{self.condition}/*.tif"))
         self.lenth = len(self.nm_lr)
 
     def _load_npz_data(self, path):
-        """加载 .npz 格式数据 (784, 1, 50, 128, 128), SCZYX"""
+        """Load npz (784, 1, 50, 128, 128), SCZYX"""
         data = np.load(path)
         return data['X'], data['Y']
 
     def _split_patches(self, X, Y, patch_size=64):
-        """将数据切分为小补丁"""
         X_patches, Y_patches = [], []
         for n in range(len(X)):
             for i in range(0, X.shape[3], patch_size):
@@ -522,7 +470,7 @@ class ProjFlywingDataset(Dataset):
         return np.array(X_patches), np.array(Y_patches)
 
     def _load_training_data(self, file, axes):
-        """加载并预处理训练数据 (784, 1, 1, 128, 128) """
+        """Load and preprocess training data (784, 1, 1, 128, 128) """
         data = np.load(file)
         X, Y = data['X'], data['Y']
 
@@ -552,94 +500,17 @@ class ProjFlywingDataset(Dataset):
     def __len__(self):
         return self.lenth
     
-# class DenoiseLiverDataset(Dataset):
-#     def __init__(self, config, is_train=True):
-#         """
-#         Args:
-#             config: 配置对象
-#             is_train: 是否为训练模式
-#         """
-#         self.data_dir = config.data_dir
-#         self.is_train = is_train
-#         self.denoisegt = ['Denoising_Planaria', 'Denoising_Tribolium']
-#         c = config.condition
-
-#         if is_train:
-#             self._scandenoisenpy()
-#         else:
-#             self._scandenoisetif(c)
-        
-#         self.lenthdenoise = len(self.nm_lrdenoise)
-#         self.lenth = self.lenthdenoise
-
-#         if is_train:
-#             print('++ ++ ++ ++ ++ ++ length of training images = ', self.lenth, '++ ++ ++ ++ ++ ++')
-#         else:
-#             print('++ ++ ++ ++ ++ ++ length of test images = ', self.lenth, '++ ++ ++ ++ ++ ++')
-    
-#     def _scandenoisenpy(self):
-#         hr = []
-#         lr = []
-#         datapath = self.data_dir # '/home/zhenghanfang/Project/3D/data/Denoising/'
-#         for i in self.denoisegt:
-#             # Planaria: X/Y  (17005, 16, 64, 64, 1)(895, 16, 64, 64, 1)  float32
-#             # Tr  (14725, 16, 64, 64, 1) (775, 16, 64, 64, 1)
-#             train_data = np.load(datapath + '/' + i + '/' + '/train_data/data_label.npz')
-#             X = train_data['X']# S, C, D, H, W
-#             Y = train_data['Y'] # S, C, D, H, W
-#             print('Dataset:', i, 'np.isnan(X).any(), np.isnan(Y).any()', np.isnan(X).any(), np.isnan(Y).any())
-#             print('X.shape, Y.shape = ', X.shape, Y.shape)
-#             assert len(X) == len(Y)
-#             hr.extend(Y)
-#             lr.extend(X)
-#         self.nm_hrdenoise, self.nm_lrdenoise = hr, lr
-
-#     def _scandenoisetif(self, c=1):
-#         lr = []
-#         datapath = self.data_dir
-#         lr.extend(sorted(glob.glob(datapath + '/%s/test_data/condition_%d/*.tif' % (self.denoisegt[0], c))))
-#         self.hrpath = datapath + '/%s/test_data/GT/' % self.denoisegt[0]
-#         lr.sort()
-#         self.nm_lrdenoise = lr
-
-#     def __getitem__(self, idx):
-#         # data = np.load(self.file_list[idx])
-#         if self.is_train:
-#             target = self.nm_hrdenoise[idx]
-#             source = self.nm_lrdenoise[idx]
-#             # 转换为tensor并添加维度
-#             source = torch.from_numpy(source).float()
-#             target = torch.from_numpy(target).float()
-#             return source, target
-#         else:
-#             filename, fmt = os.path.splitext(os.path.basename(self.nm_lrdenoise[idx]))
-#             target = np.float32(tifffile.imread(self.hrpath + filename + fmt))  # / 65535
-#             source = np.float32(tifffile.imread(self.nm_lrdenoise[idx]))
-#             # print('Test Denoise, ----> rgblr.max/min', rgblr.max(), rgblr.min(), rgblr.shape)
-#             source = torch.from_numpy(np.ascontiguousarray(source * 255)).float().unsqueeze(0)
-#             target = torch.from_numpy(np.ascontiguousarray(target * 255)).float().unsqueeze(0)
-#             return source, target
-
-#     def __len__(self):
-#         return self.length
 
 class DenoisePlanriaDataset(Dataset):
     def __init__(self, config, is_train=True):
-        """
-        Args:
-            config: 配置对象
-            is_train: 是否为训练模式
-        """
+
         self.data_dir = config.data_dir
-        # Path('/home/zch/Documents/foundation_mamba_biomed/data_unifmir/Denoise/Denoising_Planaria/preprocessed')
         self.is_train = is_train
         self.condition = config.condition # one in ['condition_1', 'condition_2', 'condition_3', 'GT']
         
-        # 加载数据集信息
         info = np.load(os.path.join(self.data_dir, 'dataset_info.npy'), allow_pickle=True).item()
         self.original_shape = info['original_test_shape'] if not is_train else None
         self.target_num = info['data_number'] if not is_train else None
-        # 获取文件列表
         if is_train:
             self.file_list = sorted(glob.glob(os.path.join(self.data_dir, 'train', 'cluster_*.npz')))
         else:
@@ -647,7 +518,6 @@ class DenoisePlanriaDataset(Dataset):
             
         print(f"{'Train' if is_train else 'Test'} dataset initialized with {len(self.file_list)} samples")
         
-        # 加载第一个文件以获取数据形状
         sample_data = np.load(self.file_list[0])
         if is_train:
             source_shape = sample_data['source'].shape
@@ -656,7 +526,6 @@ class DenoisePlanriaDataset(Dataset):
         print(f"Original data shape: {source_shape}")
         
         if not is_train:
-            # 仅测试集需要patch坐标信息
             self.patch_coords = []
             for file_path in self.file_list:
                 data = np.load(file_path)
@@ -670,9 +539,7 @@ class DenoisePlanriaDataset(Dataset):
         else:
             source = data[self.condition]
             target = data['GT']
-            
-        # 转换为tensor并添加维度
-        
+                    
         source = source / source.max()
 
         source = torch.from_numpy(source).float()
