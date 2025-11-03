@@ -39,15 +39,8 @@ python -c "import site; print(site.getsitepackages())"
 ## Pretrain Orochi
 
 Dataset:
+
 Checkpoint:
-
-
-
-## Finetune Orochi
-
-Download the Pretrained Models
-
-> Coming Soon!
 
 
 ### 1. Prepare the datasets
@@ -66,7 +59,7 @@ The dataset used in our finetune process can be download as follows:
     - 2D: Download datasets form: http://www.med.harvard.edu/aanlib/, and copy to the corresponding folders. You may need to use the provided preprocess code in `./data_preprocess` to manage the data. ([this link](https://github.com/xianming-gu/ASFE-Fusion).)
 
 - Registration
-    - 3D: 
+    - 3D: [Transmorph githubrepository](https://github.com/junyuchen245/TransMorph_Transformer_for_Medical_Image_Registration.git) Downlaod datasets from https://drive.google.com/uc?export=download&id=1BdEaylMDpeXtyuX5QH8l_Ut4OgenKss4
 
 
 ### 2. Finetune models
