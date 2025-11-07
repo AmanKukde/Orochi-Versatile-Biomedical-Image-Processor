@@ -38,9 +38,21 @@ python -c "import site; print(site.getsitepackages())"
 
 ## Pretrain Orochi
 
-Dataset:
+### 🧬 Dataset
+- **hiPSC 2D**: [eternalaudrey/hipsc_2d](https://huggingface.co/datasets/eternalaudrey/hipsc_2d)  
+- **hiPSC 3D**: [eternalaudrey/hipsc_3d](https://huggingface.co/datasets/eternalaudrey/hipsc_3d)  
+- **HiP-CT 2D**: [eternalaudrey/hipct_2d](https://huggingface.co/datasets/eternalaudrey/hipct_2d)  
+- **IDR 2D**: [eternalaudrey/idr_2d](https://huggingface.co/datasets/eternalaudrey/idr_2d)  
+- **IDR Raw**:  
+  - [eternalaudrey/idr-01](https://huggingface.co/datasets/eternalaudrey/idr-01)  
+  - [eternalaudrey/idr-02](https://huggingface.co/datasets/eternalaudrey/idr-02)  
+  - [eternalaudrey/idr-03](https://huggingface.co/datasets/eternalaudrey/idr-03)  
+  - [eternalaudrey/idr-04](https://huggingface.co/datasets/eternalaudrey/idr-04)
 
-Checkpoint:
+### 💾 Checkpoints
+- **2D Pretrained Model**: [eternalaudrey/mamba-fm-2d-ckpt](https://huggingface.co/eternalaudrey/mamba-fm-2d-ckpt)  
+- **3D Pretrained Model**: [eternalaudrey/mamba-fm-3d-ckpt](https://huggingface.co/eternalaudrey/mamba-fm-3d-ckpt)
+
 
 
 ### 1. Prepare the datasets
