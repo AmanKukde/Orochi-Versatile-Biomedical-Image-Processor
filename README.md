@@ -1,6 +1,17 @@
 # Orochi
 Official Implementation for "Orochi: Versatile Biomedical Image Processor"
 
+Please cite our paper if you use the code and data we provide
+
+```bash
+@article{dai2025orochi,
+  title={Orochi: Versatile Biomedical Image Processor},
+  author={Dai, Gaole and Zhou, Chenghao and Zhou, Yu and Zhang, Rongyu and Zhang, Yuan and Hou, Chengkai and Huang, Tiejun and Chen, Jianxu and Zhang, Shanghang},
+  journal={arXiv preprint arXiv:2509.22583},
+  year={2025}
+}
+```
+
 ## Environment
 
 ### 1. Create the environment
