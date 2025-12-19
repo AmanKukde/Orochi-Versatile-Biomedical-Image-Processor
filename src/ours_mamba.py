@@ -813,11 +813,35 @@ class IR_decoder(nn.Module):
             kernel_size=3,
             padding=1,
         )
-    
+
     def forward(self, out_feats):
         out = self.decoder(out_feats)
         out = self.head(out)
         return out
+
+class decomp_decoder(nn.Module):
+    """
+    Decomposition decoder that outputs 2 separate images from a composite.
+    Used to split a combined image (A+B) back into its components (A', B').
+    """
+    def __init__(self, config):
+        super(decomp_decoder, self).__init__()
+        self.decoder = ConvDecoder(config)
+        # Output 2 channels (one for each decomposed image)
+        self.head = Head(
+            in_channels=config.decoder_head_chan,
+            out_channels=2,  # 2 images to decompose
+            kernel_size=3,
+            padding=1,
+        )
+
+    def forward(self, out_feats):
+        out = self.decoder(out_feats)
+        out = self.head(out)  # (B, 2, D, H, W)
+        # Split into two separate images
+        image_A = out[:, 0:1, ...]  # (B, 1, D, H, W)
+        image_B = out[:, 1:2, ...]  # (B, 1, D, H, W)
+        return image_A, image_B
 
 
 class SpatialTransformer(nn.Module):
@@ -873,6 +897,7 @@ class MambaULight(nn.Module):
         self.fus_decoder = fus_decoder(config)
         self.SR_decoder = SR_decoder(config)
         self.IR_decoder = IR_decoder(config)
+        self.decomp_decoder = decomp_decoder(config)  # Decomposition decoder
         # 像素损失
         self.mse = nn.MSELoss()
         # 配准损失
@@ -880,7 +905,7 @@ class MambaULight(nn.Module):
         self.grad = losses.Grad3d(penalty='l2')
         self.ssim = losses.SSIM3D()
     
-    def forward(self, raw):
+    def forward(self, raw, raw_B=None):
         # 变形退化
         reg_source, reg_flow = self.deform(raw)
         x = torch.cat([reg_source, raw], dim=1)
@@ -891,26 +916,41 @@ class MambaULight(nn.Module):
         # # 应用变形场到网格图像
         # deformed_grid = self.spatial_trans(grid_img, reg_flow)
         # restored_grid = self.spatial_trans(grid_img, reg_inv_flow)
-        
+
         # 掩码退化
         fus_source_A = self.mask(raw)
         fus_source_B = self.mask(raw)
         x = torch.cat([fus_source_A, fus_source_B], dim=1)
         out_feats = self.encoder(x)
         fused = self.fus_decoder(out_feats)
-        
+
         # 下采样退化
         SR_source = self.downsample(raw)
         x = torch.cat([SR_source, SR_source], dim=1)
-        out_feats = self.encoder(x)        
+        out_feats = self.encoder(x)
         SRed = self.SR_decoder(out_feats)
-        
+
         # 噪声退化
         IR_source = self.noise(raw)
         x = torch.cat([IR_source, IR_source], dim=1)
         out_feats = self.encoder(x)
         IRed = self.IR_decoder(out_feats)
-        
+
+        # 分解退化 (Decomposition)
+        # If raw_B not provided, create pairs by rolling the batch
+        if raw_B is None:
+            raw_B = torch.roll(raw, shifts=1, dims=0)
+
+        # Create composite image by adding A and B
+        composite = self.compose(raw, raw_B)
+
+        # Encode composite (concatenate with itself following existing pattern)
+        x = torch.cat([composite, composite], dim=1)
+        out_feats = self.encoder(x)
+
+        # Decode to decompose into A and B
+        decomp_A, decomp_B = self.decomp_decoder(out_feats)
+
         # 输出结果
         logits = {
             'raw': raw.detach().cpu().numpy(),
@@ -934,6 +974,13 @@ class MambaULight(nn.Module):
             'IR': {
                 'noisy': IR_source.detach().cpu().numpy(),
                 'restored': IRed.detach().cpu().numpy()
+            },
+            'decomp': {
+                'composite': composite.detach().cpu().numpy(),
+                'decomposed_A': decomp_A.detach().cpu().numpy(),
+                'decomposed_B': decomp_B.detach().cpu().numpy(),
+                'original_A': raw.detach().cpu().numpy(),
+                'original_B': raw_B.detach().cpu().numpy()
             }
         }
         
@@ -943,7 +990,9 @@ class MambaULight(nn.Module):
                 'reg': self.mse(reged, raw),
                 'fus': self.mse(fused, raw),
                 'SR': self.mse(SRed, raw),
-                'IR': self.mse(IRed, raw)
+                'IR': self.mse(IRed, raw),
+                'decomp_A': self.mse(decomp_A, raw),
+                'decomp_B': self.mse(decomp_B, raw_B)
             },
             # 'ssim': {
             #     'fus': self.ssim(fused, raw),
@@ -1104,10 +1153,34 @@ class MambaULight(nn.Module):
         noisy = torch.clamp(noisy, min=0.0)
         # 模拟光子计数的泊松分布噪声
         lambda_poisson = noisy * 255  # 假设像素值范围为0-1，转换为0-255
-        noisy = torch.poisson(lambda_poisson) / 255.0        
+        noisy = torch.poisson(lambda_poisson) / 255.0
         return torch.clamp(noisy, 0, 1)  # 确保像素值在 [0, 1] 范围内
-    
-    
+
+    def compose(self, image_A, image_B):
+        """
+        Compose two images by adding them together with normalization.
+        This creates a composite image that the decomposition decoder will learn to split.
+
+        Args:
+            image_A: First image (B, 1, D, H, W)
+            image_B: Second image (B, 1, D, H, W)
+
+        Returns:
+            composite: Combined image (B, 1, D, H, W) normalized to [0, 1]
+        """
+        # Simple additive composition
+        composite = image_A + image_B
+
+        # Normalize to [0, 1] range to prevent overflow
+        # Using average to keep intensities in reasonable range
+        composite = composite / 2.0
+
+        # Ensure values stay in valid range
+        composite = torch.clamp(composite, 0.0, 1.0)
+
+        return composite
+
+
 
 
 def print_model_details(model):
