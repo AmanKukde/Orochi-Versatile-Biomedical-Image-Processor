@@ -14,6 +14,9 @@ cd foundation-mamba-biomed
 ```bash
 conda env create -f temp/environment.yaml
 conda activate mamba_biomed
+
+# Install pip dependencies (IMPORTANT!)
+pip install -r temp/requirements.txt
 ```
 
 ### 3. Run Automated Setup
@@ -109,6 +112,16 @@ Choose your path:
 
 ## 🐛 Troubleshooting
 
+### "No module named 'lpips'" or other import errors
+```bash
+# Quick fix - run this script
+bash fix_environment.sh
+
+# Or manually:
+conda activate mamba_biomed
+pip install -r temp/requirements.txt
+```
+
 ### "CUDA not available"
 - Check GPU drivers: `nvidia-smi`
 - Reinstall PyTorch with CUDA support
@@ -119,19 +132,30 @@ Choose your path:
 
 ### "Module not found"
 - Activate environment: `conda activate mamba_biomed`
-- Reinstall: `conda env create -f temp/environment.yaml --force`
+- Install pip deps: `pip install -r temp/requirements.txt`
+- If still fails: `conda env create -f temp/environment.yaml --force`
 
 ### "Out of memory" during testing
 - This is normal for large models
 - For quick_test.py, it uses small input sizes
 - For real experiments, see REPLICATION_GUIDE.md for memory tips
 
+### More Issues?
+See **TROUBLESHOOTING.md** for comprehensive solutions to common problems.
+
 ## 📚 Documentation
 
 - **QUICKSTART.md** (this file): Get started fast
 - **SETUP_GUIDE.md**: Complete setup with all details
 - **REPLICATION_GUIDE.md**: Step-by-step result replication
+- **TROUBLESHOOTING.md**: Solutions to common problems
 - **README.md**: Original repository documentation
+
+## 🔧 Helper Scripts
+
+- **setup_environment.py**: Automated environment setup and mamba_ssm fix
+- **quick_test.py**: Comprehensive installation test suite
+- **fix_environment.sh**: Quick fix for missing pip packages
 
 ## 🔗 Useful Links
 
