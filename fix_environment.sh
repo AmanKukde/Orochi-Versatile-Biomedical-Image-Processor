@@ -20,7 +20,7 @@ if [ -z "$CONDA_DEFAULT_ENV" ]; then
 fi
 
 # Check if we're in the right directory
-if [ ! -f "temp/requirements.txt" ]; then
+if [ ! -f "./temp/requirements.txt" ]; then
     echo "✗ Error: temp/requirements.txt not found!"
     echo "  Please run this script from the repository root directory."
     exit 1
