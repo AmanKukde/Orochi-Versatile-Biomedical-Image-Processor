@@ -74,9 +74,10 @@ def test_decomposition():
     print(f"  - Total parameters: {total_params:,}")
     print(f"  - Trainable parameters: {trainable_params:,}")
 
-    # Create dummy data
+    # Create dummy data - use config dimensions
     batch_size = 2
-    C, D, H, W = 1, 32, 256, 256
+    C = 1  # Single channel
+    D, H, W = config.img_size  # Use config dimensions
     print(f"\n✓ Creating dummy data")
     print(f"  - Batch size: {batch_size}")
     print(f"  - Shape: ({batch_size}, {C}, {D}, {H}, {W})")
