@@ -39,8 +39,13 @@ def get_test_config():
     return config
 
 
-def test_decomposition():
-    """Test the decomposition task with dummy data."""
+def test_decomposition(checkpoint_path=None):
+    """Test the decomposition task with dummy data.
+
+    Args:
+        checkpoint_path: Optional path to pretrained checkpoint.
+                        If provided, will load encoder weights.
+    """
 
     print("=" * 80)
     print("Testing Decomposition Implementation")
@@ -67,6 +72,49 @@ def test_decomposition():
     except Exception as e:
         print(f"✗ Error creating model: {e}")
         return False
+
+    # Load pretrained weights if provided
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        print(f"\n✓ Loading pretrained weights from: {checkpoint_path}")
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+
+            # Extract state dict (handle different checkpoint formats)
+            if 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+            elif 'model' in checkpoint:
+                state_dict = checkpoint['model']
+            else:
+                state_dict = checkpoint
+
+            # Remove 'module.' prefix if present (from DDP training)
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                name = k.replace('module.', '') if k.startswith('module.') else k
+                new_state_dict[name] = v
+
+            # Load weights with strict=False to allow new decomp_decoder
+            missing_keys, unexpected_keys = model.load_state_dict(new_state_dict, strict=False)
+
+            print(f"  - Loaded checkpoint successfully!")
+            if missing_keys:
+                decomp_keys = [k for k in missing_keys if 'decomp' in k]
+                other_keys = [k for k in missing_keys if 'decomp' not in k]
+                if decomp_keys:
+                    print(f"  - New decomp_decoder parameters (expected): {len(decomp_keys)} keys")
+                if other_keys:
+                    print(f"  - Missing keys (unexpected): {len(other_keys)} keys")
+                    print(f"    First few: {other_keys[:3]}")
+            if unexpected_keys:
+                print(f"  - Unexpected keys: {len(unexpected_keys)} (will be ignored)")
+        except Exception as e:
+            print(f"  ⚠ Warning: Could not load checkpoint: {e}")
+            print(f"  - Continuing with random initialization...")
+    elif checkpoint_path:
+        print(f"\n⚠ Checkpoint path provided but file not found: {checkpoint_path}")
+        print(f"  - Continuing with random initialization...")
+    else:
+        print(f"\n✓ Using random initialization (no checkpoint provided)")
 
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
@@ -194,5 +242,12 @@ def test_decomposition():
 
 
 if __name__ == "__main__":
-    success = test_decomposition()
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Test decomposition implementation')
+    parser.add_argument('--checkpoint', type=str, default=None,
+                        help='Path to pretrained checkpoint (e.g., pretrained_checkpoints/MambaULight2D_epoch_99_loss_-0.0624.pth.tar)')
+    args = parser.parse_args()
+
+    success = test_decomposition(checkpoint_path=args.checkpoint)
     sys.exit(0 if success else 1)
