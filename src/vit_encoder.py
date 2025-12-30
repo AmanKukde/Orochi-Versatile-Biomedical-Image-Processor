@@ -22,10 +22,162 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from timm.models.layers import DropPath, trunc_normal_
+import torch.nn.functional as nnf
+from timm.models.layers import DropPath, trunc_normal_, to_3tuple
 
-# Local imports - reuse components from ours_mamba
-from src.ours_mamba import PatchEmbed, PatchMerging, segm_init_weights
+
+# ============================================================================
+# Shared Components (copied from ours_mamba.py for independence)
+# ============================================================================
+
+
+class PatchEmbed(nn.Module):
+    """Convert 3D images to patch embeddings.
+
+    Divides the input volume into non-overlapping 3D patches and projects them
+    to an embedding space using 3D convolution.
+
+    Args:
+        img_size: Size of input image [D, H, W]
+        patch_size: Size of each patch. Default: 4
+        in_chans: Number of input image channels. Default: 3
+        embed_dim: Number of linear projection output channels. Default: 96
+        norm_layer: Normalization layer. Default: None
+    """
+
+    def __init__(
+        self,
+        img_size,
+        patch_size=4,
+        in_chans=3,
+        embed_dim=96,
+        norm_layer=None,
+    ):
+        super().__init__()
+        patch_size = to_3tuple(patch_size)
+        self.patch_size = patch_size
+        self.num_patches = (
+            (img_size[2] // patch_size[2])
+            * (img_size[1] // patch_size[1])
+            * (img_size[0] // patch_size[0])
+        )
+        self.in_chans = in_chans
+        self.embed_dim = embed_dim
+
+        self.proj = nn.Conv3d(
+            in_chans, embed_dim, kernel_size=patch_size, stride=patch_size
+        )
+        if norm_layer is not None:
+            self.norm = norm_layer(embed_dim)
+        else:
+            self.norm = None
+
+    def forward(self, x):
+        """Forward pass with automatic padding.
+
+        Args:
+            x: Input tensor of shape (B, C, D, H, W)
+
+        Returns:
+            Patch embeddings of shape (B, embed_dim, D', H', W')
+        """
+        _, _, T, H, W = x.size()
+        # Pad input if dimensions are not divisible by patch size
+        if T % self.patch_size[2] != 0:
+            x = nnf.pad(x, (0, self.patch_size[2] - T % self.patch_size[2]))
+        if W % self.patch_size[1] != 0:
+            x = nnf.pad(x, (0, 0, 0, self.patch_size[1] - W % self.patch_size[1]))
+        if H % self.patch_size[0] != 0:
+            x = nnf.pad(x, (0, 0, 0, 0, 0, self.patch_size[0] - H % self.patch_size[0]))
+
+        x = self.proj(x)  # B C Wh Ww Wt
+        if self.norm is not None:
+            Wt, Wh, Ww = x.size(2), x.size(3), x.size(4)
+            x = x.flatten(2).transpose(1, 2)
+            x = self.norm(x)
+            x = x.transpose(1, 2).view(-1, self.embed_dim, Wt, Wh, Ww)
+        return x
+
+
+class PatchMerging(nn.Module):
+    """Patch Merging Layer for downsampling feature maps.
+
+    Reduces spatial dimensions by a factor of 2 in each dimension by merging
+    neighboring patches and projecting to higher dimensional space.
+
+    Args:
+        dim: Number of input channels
+        norm_layer: Normalization layer. Default: nn.LayerNorm
+        reduce_factor: Channel dimension multiplication factor. Default: 2
+    """
+
+    def __init__(self, dim, norm_layer=nn.LayerNorm, reduce_factor=2):
+        super().__init__()
+        self.dim = dim
+        self.reduction = nn.Linear(8 * dim, reduce_factor * dim, bias=False)
+        self.norm = norm_layer(8 * dim)
+
+    def forward(self, x, H, W, T):
+        """Forward pass merging 2x2x2 neighborhoods.
+
+        Args:
+            x: Input tensor of shape (B, H*W*T, C)
+            H: Height of feature map
+            W: Width of feature map
+            T: Depth of feature map
+
+        Returns:
+            Merged tensor of shape (B, H/2*W/2*T/2, reduce_factor*C)
+        """
+        B, L, C = x.shape
+        assert L == H * W * T, "input feature has wrong size"
+        assert (
+            H % 2 == 0 and W % 2 == 0 and T % 2 == 0
+        ), f"x size ({H}*{W}) are not even."
+
+        x = x.view(B, H, W, T, C)
+
+        # Pad input if needed
+        pad_input = (H % 2 == 1) or (W % 2 == 1) or (T % 2 == 1)
+        if pad_input:
+            x = nnf.pad(x, (0, 0, 0, T % 2, 0, W % 2, 0, H % 2))
+
+        # Extract 8 sub-volumes from 2x2x2 neighborhood
+        x0 = x[:, 0::2, 0::2, 0::2, :]  # B H/2 W/2 T/2 C
+        x1 = x[:, 1::2, 0::2, 0::2, :]  # B H/2 W/2 T/2 C
+        x2 = x[:, 0::2, 1::2, 0::2, :]  # B H/2 W/2 T/2 C
+        x3 = x[:, 0::2, 0::2, 1::2, :]  # B H/2 W/2 T/2 C
+        x4 = x[:, 1::2, 1::2, 0::2, :]  # B H/2 W/2 T/2 C
+        x5 = x[:, 0::2, 1::2, 1::2, :]  # B H/2 W/2 T/2 C
+        x6 = x[:, 1::2, 0::2, 1::2, :]  # B H/2 W/2 T/2 C
+        x7 = x[:, 1::2, 1::2, 1::2, :]  # B H/2 W/2 T/2 C
+        x = torch.cat([x0, x1, x2, x3, x4, x5, x6, x7], -1)  # B H/2 W/2 T/2 8*C
+        x = x.view(B, -1, 8 * C)  # B H/2*W/2*T/2 8*C
+
+        x = self.norm(x)
+        x = self.reduction(x)
+
+        return x
+
+
+def segm_init_weights(m):
+    """Initialize weights for segmentation layers.
+
+    Args:
+        m: Module to initialize
+    """
+    if isinstance(m, nn.Linear):
+        trunc_normal_(m.weight, std=0.02)
+        if isinstance(m, nn.Linear) and m.bias is not None:
+            nn.init.constant_(m.bias, 0)
+    elif isinstance(m, nn.LayerNorm):
+        nn.init.constant_(m.bias, 0)
+        nn.init.constant_(m.weight, 1.0)
+
+
+# ============================================================================
+# Vision Transformer Components
+# ============================================================================
 
 
 class MultiHeadAttention(nn.Module):

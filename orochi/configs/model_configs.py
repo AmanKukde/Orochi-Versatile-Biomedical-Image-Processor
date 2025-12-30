@@ -406,6 +406,7 @@ class ViT3DConfig(BaseConfig):
     # Pretrained
     pretrained_path: Optional[Path] = None
     freeze_encoder: bool = False
+    freeze_decoders: bool = False
 
     def __post_init__(self):
         """Validate configuration."""
@@ -478,6 +479,7 @@ class MambaULightConfig(BaseConfig):
     # Pretrained
     pretrained_path: Optional[Path] = None
     freeze_encoder: bool = False
+    freeze_decoders: bool = False
 
     def __post_init__(self):
         """Validate configuration."""
