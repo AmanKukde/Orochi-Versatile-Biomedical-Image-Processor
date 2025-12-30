@@ -1,0 +1,72 @@
+# Mamba Training Configuration
+# Example configuration for training MambaULight model
+
+# Paths
+data_root: ./data
+checkpoint_dir: ./checkpoints/mamba
+log_dir: ./logs/mamba
+output_dir: ./outputs/mamba
+
+# Device
+device: cuda
+gpu_ids: [0]
+num_workers: 4
+
+# Training
+batch_size: 2
+num_epochs: 100
+learning_rate: 0.0001
+weight_decay: 0.00001
+grad_clip: 1.0
+
+# Optimizer
+optimizer: adamw
+betas: [0.9, 0.999]
+
+# Scheduler
+scheduler: cosine
+min_lr: 0.0000001
+
+# Logging
+log_interval: 10
+save_interval: 5
+val_interval: 1
+wandb_project: orochi-mamba
+experiment_name: mamba_full_training
+
+# Reproducibility
+seed: 42
+deterministic: false
+
+# Model architecture
+img_size: [64, 128, 128]
+patch_size: 4
+in_chans: 2
+embed_dim: 96
+depths: [2, 2, 4, 2]
+
+# Mamba-specific parameters
+ssm_cfg: null
+fused_add_norm: true
+residual_in_fp32: true
+rms_norm: true
+norm_epsilon: 0.00001
+
+# Architecture details
+patch_norm: true
+drop_rate: 0.0
+drop_path_rate: 0.1
+out_indices: [0, 1, 2, 3]
+if_convskip: true
+if_transskip: true
+pat_merg_rf: 2
+decoder_head_chan: 32
+grid_size: [64, 128, 128]
+window_size: [7, 7, 7]
+use_checkpoint: false
+initializer_cfg: null
+
+# Pretrained
+pretrained_path: null
+freeze_encoder: false
+freeze_decoders: false

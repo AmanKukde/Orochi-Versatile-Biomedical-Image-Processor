@@ -291,3 +291,204 @@ class SuperResolution3DConfig(Mamba3DConfig):
     """
     task: str = "super_resolution"
     scale_factor: int = 2
+
+
+# ============================================================================
+# Vision Transformer (ViT) Configurations
+# ============================================================================
+
+
+@dataclass
+class ViT3DConfig(BaseConfig):
+    """Configuration for 3D Vision Transformer model.
+
+    Extends BaseConfig with ViT-specific parameters. This config is designed
+    to be comparable to Mamba3DConfig but uses standard transformer attention
+    instead of Mamba state-space models.
+
+    Attributes:
+        # Model architecture
+        img_size: Input volume size [D, H, W]
+        patch_size: Patch size for patch embedding
+        in_chans: Number of input channels
+        out_chans: Number of output channels
+        embed_dim: Embedding dimension
+        depths: Number of transformer blocks at each level
+        num_heads: Number of attention heads per block
+
+        # ViT-specific
+        mlp_ratio: Ratio of MLP hidden dim to embedding dim
+        qkv_bias: Whether to add bias to QKV projection
+        attn_drop_rate: Attention dropout rate
+        proj_drop_rate: Projection dropout rate
+
+        # Architecture details
+        patch_norm: Whether to use normalization after patch embedding
+        drop_rate: Dropout rate
+        drop_path_rate: Stochastic depth rate
+        out_indices: Indices of stages to output features from
+        if_convskip: Whether to use convolutional skip connections
+        if_transskip: Whether to use transformer skip connections
+        pat_merg_rf: Patch merging reduction factor
+        decoder_head_chan: Number of channels in decoder head
+        grid_size: Size for spatial transformation grid
+        window_size: Window size (kept for compatibility, unused in ViT)
+        use_checkpoint: Whether to use gradient checkpointing
+
+        # SSM parameters (kept for interface compatibility, unused in ViT)
+        ssm_cfg: SSM configuration (None for ViT)
+        fused_add_norm: Whether to use fused operations (False for ViT)
+        residual_in_fp32: Keep residuals in FP32 (False for ViT)
+        rms_norm: Whether to use RMS norm (False for ViT)
+        norm_epsilon: Epsilon for normalization
+
+        # Encoder/decoder configuration
+        initializer_cfg: Initializer configuration
+
+        # Task-specific
+        task: Task type ('multi_task' for all tasks together)
+
+        # Pretrained
+        pretrained_path: Path to pretrained checkpoint
+        freeze_encoder: Freeze encoder weights during finetuning
+
+    Example:
+        >>> # ViT for multi-task learning
+        >>> config = ViT3DConfig(
+        ...     task='multi_task',
+        ...     img_size=[64, 128, 128],
+        ...     patch_size=4,
+        ...     embed_dim=96,
+        ...     depths=[2, 2, 4, 2],
+        ...     num_heads=8
+        ... )
+    """
+
+    # Model architecture
+    img_size: List[int] = field(default_factory=lambda: [64, 128, 128])
+    patch_size: int = 4
+    in_chans: int = 2  # Two input images
+    out_chans: int = 3
+    embed_dim: int = 96
+    depths: List[int] = field(default_factory=lambda: [2, 2, 4, 2])
+    num_heads: int = 8
+
+    # ViT-specific parameters
+    mlp_ratio: float = 4.0
+    qkv_bias: bool = True
+    attn_drop_rate: float = 0.0
+    proj_drop_rate: float = 0.0
+
+    # Architecture details
+    patch_norm: bool = True
+    drop_rate: float = 0.0
+    drop_path_rate: float = 0.1
+    out_indices: List[int] = field(default_factory=lambda: [0, 1, 2, 3])
+    if_convskip: bool = True
+    if_transskip: bool = True
+    pat_merg_rf: int = 2
+    decoder_head_chan: int = 32
+    grid_size: List[int] = field(default_factory=lambda: [64, 128, 128])
+    window_size: List[int] = field(default_factory=lambda: [7, 7, 7])
+    use_checkpoint: bool = False
+
+    # SSM parameters (kept for compatibility, unused in ViT)
+    ssm_cfg: Optional[dict] = None
+    fused_add_norm: bool = False
+    residual_in_fp32: bool = False
+    rms_norm: bool = False
+    norm_epsilon: float = 1e-5
+    initializer_cfg: Optional[dict] = None
+
+    # Task-specific
+    task: str = "multi_task"
+
+    # Pretrained
+    pretrained_path: Optional[Path] = None
+    freeze_encoder: bool = False
+
+    def __post_init__(self):
+        """Validate configuration."""
+        super().__post_init__()
+
+        # Validate image size
+        if len(self.img_size) != 3:
+            raise ValueError(f"img_size must be [D, H, W], got {self.img_size}")
+
+        # Validate grid_size
+        if len(self.grid_size) != 3:
+            raise ValueError(f"grid_size must be [D, H, W], got {self.grid_size}")
+
+        # Validate task
+        valid_tasks = ['multi_task', 'registration', 'fusion', 'super_resolution', 'isotropic_restoration']
+        if self.task not in valid_tasks:
+            raise ValueError(f"task must be one of {valid_tasks}, got '{self.task}'")
+
+        # Convert pretrained_path if specified
+        if self.pretrained_path is not None:
+            self.pretrained_path = Path(self.pretrained_path)
+
+        # Ensure num_heads divides embed_dim evenly
+        if self.embed_dim % self.num_heads != 0:
+            raise ValueError(f"embed_dim ({self.embed_dim}) must be divisible by num_heads ({self.num_heads})")
+
+
+@dataclass
+class MambaULightConfig(BaseConfig):
+    """Configuration for MambaULight multi-task model.
+
+    This is a wrapper around the original config structure used by MambaULight.
+
+    Example:
+        >>> config = MambaULightConfig(
+        ...     img_size=[64, 128, 128],
+        ...     patch_size=4,
+        ...     embed_dim=96
+        ... )
+    """
+
+    # Model architecture
+    img_size: List[int] = field(default_factory=lambda: [64, 128, 128])
+    patch_size: int = 4
+    in_chans: int = 2
+    embed_dim: int = 96
+    depths: List[int] = field(default_factory=lambda: [2, 2, 4, 2])
+
+    # Mamba-specific
+    ssm_cfg: Optional[dict] = None
+    fused_add_norm: bool = True
+    residual_in_fp32: bool = True
+    rms_norm: bool = True
+    norm_epsilon: float = 1e-5
+
+    # Architecture details
+    patch_norm: bool = True
+    drop_rate: float = 0.0
+    drop_path_rate: float = 0.1
+    out_indices: List[int] = field(default_factory=lambda: [0, 1, 2, 3])
+    if_convskip: bool = True
+    if_transskip: bool = True
+    pat_merg_rf: int = 2
+    decoder_head_chan: int = 32
+    grid_size: List[int] = field(default_factory=lambda: [64, 128, 128])
+    window_size: List[int] = field(default_factory=lambda: [7, 7, 7])
+    use_checkpoint: bool = False
+    initializer_cfg: Optional[dict] = None
+
+    # Pretrained
+    pretrained_path: Optional[Path] = None
+    freeze_encoder: bool = False
+
+    def __post_init__(self):
+        """Validate configuration."""
+        super().__post_init__()
+
+        # Validate sizes
+        if len(self.img_size) != 3:
+            raise ValueError(f"img_size must be [D, H, W], got {self.img_size}")
+        if len(self.grid_size) != 3:
+            raise ValueError(f"grid_size must be [D, H, W], got {self.grid_size}")
+
+        # Convert pretrained_path if specified
+        if self.pretrained_path is not None:
+            self.pretrained_path = Path(self.pretrained_path)

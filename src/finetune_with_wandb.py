@@ -1,0 +1,739 @@
+"""Finetuning script with Weights & Biases integration.
+
+This script provides a unified training/finetuning pipeline for both
+Mamba and Vision Transformer architectures with comprehensive experiment tracking.
+
+Features:
+- Supports both MambaULight and ViTULight models
+- Comprehensive wandb logging (metrics, images, gradients)
+- Multi-task training (registration, fusion, SR, IR)
+- Checkpoint management and resuming
+- Mixed precision training support
+- Gradient accumulation
+
+Usage:
+    # Finetune Vision Transformer
+    python src/finetune_with_wandb.py --config configs/vit_finetune.yaml --model vit
+
+    # Finetune Mamba
+    python src/finetune_with_wandb.py --config configs/mamba_finetune.yaml --model mamba
+
+    # Resume from checkpoint
+    python src/finetune_with_wandb.py --config configs/vit_finetune.yaml --resume checkpoints/best.pth
+"""
+
+import argparse
+import os
+import random
+import sys
+from pathlib import Path
+from typing import Dict, Optional, Tuple
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.cuda.amp import GradScaler, autocast
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
+
+# wandb import
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+    print("Warning: wandb not installed. Logging will be disabled.")
+
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from orochi.configs.model_configs import ViT3DConfig, MambaULightConfig
+from src.vit_model import ViTULight
+from src.ours_mamba import MambaULight
+import src.utils as utils
+
+
+def set_seed(seed: int):
+    """Set random seed for reproducibility.
+
+    Args:
+        seed: Random seed value
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    # For deterministic behavior (slower)
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = False
+
+
+class DummyDataset(Dataset):
+    """Dummy dataset for testing and demonstration.
+
+    Replace this with your actual dataset class.
+
+    Args:
+        num_samples: Number of samples in dataset
+        img_size: Image size [D, H, W]
+        in_chans: Number of input channels
+    """
+
+    def __init__(self, num_samples=100, img_size=(64, 128, 128), in_chans=1):
+        self.num_samples = num_samples
+        self.img_size = img_size
+        self.in_chans = in_chans
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        """Return a random sample.
+
+        Returns:
+            Dictionary containing:
+                - 'image': Random 3D image tensor
+                - 'idx': Sample index
+        """
+        # Generate random 3D volume
+        image = torch.rand(self.in_chans, *self.img_size)
+
+        return {
+            'image': image,
+            'idx': idx,
+        }
+
+
+def create_model(config, model_type='vit', freeze_decoders=False):
+    """Create model based on configuration.
+
+    Args:
+        config: Model configuration object
+        model_type: 'vit' or 'mamba'
+        freeze_decoders: If True, freeze all decoder parameters (train encoder only)
+
+    Returns:
+        Model instance
+
+    Raises:
+        ValueError: If model_type is not supported
+    """
+    if model_type.lower() == 'vit':
+        print(f"Creating Vision Transformer model with {sum(config.depths)} blocks")
+        model = ViTULight(config)
+    elif model_type.lower() == 'mamba':
+        print(f"Creating Mamba model with {sum(config.depths)} blocks")
+        model = MambaULight(config)
+    else:
+        raise ValueError(f"Unknown model type: {model_type}. Choose 'vit' or 'mamba'")
+
+    # Freeze decoders if requested
+    if freeze_decoders:
+        print("Freezing decoder parameters (training encoder only)")
+
+        # Freeze all decoder parameters
+        for name, param in model.named_parameters():
+            if any(decoder in name for decoder in ['reg_decoder', 'fus_decoder', 'SR_decoder', 'IR_decoder', 'spatial_trans']):
+                param.requires_grad = False
+
+        # Count trainable vs frozen parameters
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in model.parameters())
+        frozen_params = total_params - trainable_params
+
+        print(f"Trainable parameters: {trainable_params:,} ({100*trainable_params/total_params:.2f}%)")
+        print(f"Frozen parameters: {frozen_params:,} ({100*frozen_params/total_params:.2f}%)")
+
+    return model
+
+
+def create_optimizer(model, config):
+    """Create optimizer based on configuration.
+
+    Args:
+        model: Model to optimize
+        config: Configuration object
+
+    Returns:
+        Optimizer instance
+    """
+    if config.optimizer.lower() == 'adam':
+        optimizer = optim.Adam(
+            model.parameters(),
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+            betas=config.betas,
+        )
+    elif config.optimizer.lower() == 'adamw':
+        optimizer = optim.AdamW(
+            model.parameters(),
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+            betas=config.betas,
+        )
+    elif config.optimizer.lower() == 'sgd':
+        optimizer = optim.SGD(
+            model.parameters(),
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+            momentum=config.momentum,
+        )
+    else:
+        raise ValueError(f"Unknown optimizer: {config.optimizer}")
+
+    return optimizer
+
+
+def create_scheduler(optimizer, config):
+    """Create learning rate scheduler.
+
+    Args:
+        optimizer: Optimizer instance
+        config: Configuration object
+
+    Returns:
+        Scheduler instance or None
+    """
+    if config.scheduler is None:
+        return None
+
+    if config.scheduler.lower() == 'step':
+        scheduler = optim.lr_scheduler.MultiStepLR(
+            optimizer,
+            milestones=config.lr_decay_epochs,
+            gamma=config.lr_decay_rate,
+        )
+    elif config.scheduler.lower() == 'cosine':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=config.num_epochs,
+            eta_min=config.min_lr,
+        )
+    elif config.scheduler.lower() == 'plateau':
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=config.lr_decay_rate,
+            patience=10,
+            min_lr=config.min_lr,
+        )
+    else:
+        raise ValueError(f"Unknown scheduler: {config.scheduler}")
+
+    return scheduler
+
+
+def compute_total_loss(aux_loss: Dict) -> torch.Tensor:
+    """Compute total loss from auxiliary losses.
+
+    Args:
+        aux_loss: Dictionary of task-specific losses
+
+    Returns:
+        Total weighted loss
+    """
+    total_loss = 0.0
+
+    # MSE losses for all tasks
+    for task, loss_val in aux_loss['mse'].items():
+        total_loss += loss_val
+
+    # NCC loss for registration
+    if 'ncc' in aux_loss:
+        total_loss += aux_loss['ncc']['reg']
+
+    # Gradient regularization for registration
+    if 'grad' in aux_loss:
+        total_loss += 0.01 * aux_loss['grad']['reg']  # Weight for smoothness
+
+    return total_loss
+
+
+def train_epoch(
+    model: nn.Module,
+    dataloader: DataLoader,
+    optimizer: optim.Optimizer,
+    device: str,
+    epoch: int,
+    config,
+    scaler: Optional[GradScaler] = None,
+) -> Dict[str, float]:
+    """Train for one epoch.
+
+    Args:
+        model: Model to train
+        dataloader: Training data loader
+        optimizer: Optimizer instance
+        device: Device to use
+        epoch: Current epoch number
+        config: Configuration object
+        scaler: GradScaler for mixed precision (optional)
+
+    Returns:
+        Dictionary of average losses
+    """
+    model.train()
+
+    # Track metrics
+    loss_meter = utils.AverageMeter()
+    reg_loss_meter = utils.AverageMeter()
+    fus_loss_meter = utils.AverageMeter()
+    sr_loss_meter = utils.AverageMeter()
+    ir_loss_meter = utils.AverageMeter()
+
+    pbar = tqdm(dataloader, desc=f"Epoch {epoch}/{config.num_epochs}")
+
+    for batch_idx, batch in enumerate(pbar):
+        images = batch['image'].to(device)
+
+        # Forward pass
+        if scaler is not None:
+            with autocast():
+                logits, aux_loss = model(images)
+                loss = compute_total_loss(aux_loss)
+        else:
+            logits, aux_loss = model(images)
+            loss = compute_total_loss(aux_loss)
+
+        # Backward pass
+        optimizer.zero_grad()
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            if config.grad_clip is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            if config.grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+            optimizer.step()
+
+        # Update meters
+        loss_meter.update(loss.item())
+        reg_loss_meter.update(aux_loss['mse']['reg'].item())
+        fus_loss_meter.update(aux_loss['mse']['fus'].item())
+        sr_loss_meter.update(aux_loss['mse']['SR'].item())
+        ir_loss_meter.update(aux_loss['mse']['IR'].item())
+
+        # Update progress bar
+        pbar.set_postfix({
+            'loss': f"{loss_meter.avg:.4f}",
+            'reg': f"{reg_loss_meter.avg:.4f}",
+            'fus': f"{fus_loss_meter.avg:.4f}",
+            'sr': f"{sr_loss_meter.avg:.4f}",
+            'ir': f"{ir_loss_meter.avg:.4f}",
+        })
+
+        # Log to wandb
+        if WANDB_AVAILABLE and config.wandb_project is not None:
+            if batch_idx % config.log_interval == 0:
+                wandb.log({
+                    'train/loss': loss.item(),
+                    'train/reg_loss': aux_loss['mse']['reg'].item(),
+                    'train/fus_loss': aux_loss['mse']['fus'].item(),
+                    'train/sr_loss': aux_loss['mse']['SR'].item(),
+                    'train/ir_loss': aux_loss['mse']['IR'].item(),
+                    'train/ncc_loss': aux_loss['ncc']['reg'].item(),
+                    'train/grad_loss': aux_loss['grad']['reg'].item(),
+                    'epoch': epoch,
+                    'batch': batch_idx,
+                })
+
+    return {
+        'loss': loss_meter.avg,
+        'reg_loss': reg_loss_meter.avg,
+        'fus_loss': fus_loss_meter.avg,
+        'sr_loss': sr_loss_meter.avg,
+        'ir_loss': ir_loss_meter.avg,
+    }
+
+
+@torch.no_grad()
+def validate(
+    model: nn.Module,
+    dataloader: DataLoader,
+    device: str,
+    epoch: int,
+    config,
+) -> Dict[str, float]:
+    """Validate model.
+
+    Args:
+        model: Model to validate
+        dataloader: Validation data loader
+        device: Device to use
+        epoch: Current epoch number
+        config: Configuration object
+
+    Returns:
+        Dictionary of average validation losses
+    """
+    model.eval()
+
+    # Track metrics
+    loss_meter = utils.AverageMeter()
+    reg_loss_meter = utils.AverageMeter()
+    fus_loss_meter = utils.AverageMeter()
+    sr_loss_meter = utils.AverageMeter()
+    ir_loss_meter = utils.AverageMeter()
+
+    pbar = tqdm(dataloader, desc=f"Validation")
+
+    for batch_idx, batch in enumerate(pbar):
+        images = batch['image'].to(device)
+
+        # Forward pass
+        logits, aux_loss = model(images)
+        loss = compute_total_loss(aux_loss)
+
+        # Update meters
+        loss_meter.update(loss.item())
+        reg_loss_meter.update(aux_loss['mse']['reg'].item())
+        fus_loss_meter.update(aux_loss['mse']['fus'].item())
+        sr_loss_meter.update(aux_loss['mse']['SR'].item())
+        ir_loss_meter.update(aux_loss['mse']['IR'].item())
+
+        # Log sample images to wandb
+        if WANDB_AVAILABLE and config.wandb_project is not None and batch_idx == 0:
+            # Log first sample
+            log_images = {
+                'val/raw': wandb.Image(logits['raw'][0, 0, logits['raw'].shape[2]//2]),
+                'val/reg_deformed': wandb.Image(logits['reg']['deformed'][0, 0, logits['reg']['deformed'].shape[2]//2]),
+                'val/reg_registered': wandb.Image(logits['reg']['registered'][0, 0, logits['reg']['registered'].shape[2]//2]),
+                'val/fused': wandb.Image(logits['fus']['fused'][0, 0, logits['fus']['fused'].shape[2]//2]),
+                'val/sr': wandb.Image(logits['SR']['super_resolution'][0, 0, logits['SR']['super_resolution'].shape[2]//2]),
+                'val/ir': wandb.Image(logits['IR']['restored'][0, 0, logits['IR']['restored'].shape[2]//2]),
+            }
+            wandb.log(log_images)
+
+    # Log validation metrics
+    if WANDB_AVAILABLE and config.wandb_project is not None:
+        wandb.log({
+            'val/loss': loss_meter.avg,
+            'val/reg_loss': reg_loss_meter.avg,
+            'val/fus_loss': fus_loss_meter.avg,
+            'val/sr_loss': sr_loss_meter.avg,
+            'val/ir_loss': ir_loss_meter.avg,
+            'epoch': epoch,
+        })
+
+    return {
+        'loss': loss_meter.avg,
+        'reg_loss': reg_loss_meter.avg,
+        'fus_loss': fus_loss_meter.avg,
+        'sr_loss': sr_loss_meter.avg,
+        'ir_loss': ir_loss_meter.avg,
+    }
+
+
+def save_checkpoint(
+    model: nn.Module,
+    optimizer: optim.Optimizer,
+    scheduler: Optional[optim.lr_scheduler._LRScheduler],
+    epoch: int,
+    best_loss: float,
+    config,
+    filename: str,
+):
+    """Save model checkpoint.
+
+    Args:
+        model: Model to save
+        optimizer: Optimizer state
+        scheduler: Scheduler state (optional)
+        epoch: Current epoch
+        best_loss: Best validation loss so far
+        config: Configuration object
+        filename: Filename for checkpoint
+    """
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
+        'best_loss': best_loss,
+        'config': config.to_dict(),
+    }
+
+    save_path = config.checkpoint_dir / filename
+    torch.save(checkpoint, save_path)
+    print(f"Saved checkpoint to {save_path}")
+
+
+def load_checkpoint(
+    checkpoint_path: str,
+    model: nn.Module,
+    optimizer: Optional[optim.Optimizer] = None,
+    scheduler: Optional[optim.lr_scheduler._LRScheduler] = None,
+) -> Tuple[int, float]:
+    """Load model checkpoint.
+
+    Args:
+        checkpoint_path: Path to checkpoint file
+        model: Model to load weights into
+        optimizer: Optimizer to load state into (optional)
+        scheduler: Scheduler to load state into (optional)
+
+    Returns:
+        Tuple of (epoch, best_loss)
+    """
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+
+    model.load_state_dict(checkpoint['model_state_dict'])
+
+    if optimizer is not None and 'optimizer_state_dict' in checkpoint:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+    if scheduler is not None and checkpoint['scheduler_state_dict'] is not None:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+    epoch = checkpoint.get('epoch', 0)
+    best_loss = checkpoint.get('best_loss', float('inf'))
+
+    print(f"Loaded checkpoint from epoch {epoch} with best loss {best_loss:.4f}")
+
+    return epoch, best_loss
+
+
+def load_pretrained_decoders(
+    checkpoint_path: str,
+    model: nn.Module,
+    strict: bool = False,
+) -> None:
+    """Load pretrained decoder weights from a Mamba checkpoint.
+
+    This is useful for initializing ViT model with trained Mamba decoders,
+    allowing the ViT encoder to learn the latent space expected by the decoders.
+
+    Args:
+        checkpoint_path: Path to pretrained Mamba checkpoint
+        model: Model to load decoder weights into (typically ViTULight)
+        strict: Whether to strictly enforce that keys match
+    """
+    print(f"Loading pretrained decoders from {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+
+    # Get state dict
+    if 'model_state_dict' in checkpoint:
+        pretrained_state = checkpoint['model_state_dict']
+    else:
+        pretrained_state = checkpoint
+
+    # Filter to only decoder parameters
+    decoder_state = {}
+    for key, value in pretrained_state.items():
+        if any(decoder in key for decoder in ['reg_decoder', 'fus_decoder', 'SR_decoder', 'IR_decoder', 'spatial_trans']):
+            decoder_state[key] = value
+
+    # Load decoder weights
+    missing, unexpected = model.load_state_dict(decoder_state, strict=False)
+
+    print(f"Loaded {len(decoder_state)} decoder parameters")
+    if missing:
+        # Filter out encoder parameters from missing (those are expected)
+        missing_decoders = [k for k in missing if any(dec in k for dec in ['reg_decoder', 'fus_decoder', 'SR_decoder', 'IR_decoder'])]
+        if missing_decoders:
+            print(f"Warning: {len(missing_decoders)} decoder parameters not found in checkpoint")
+    if unexpected:
+        print(f"Warning: {len(unexpected)} unexpected parameters in checkpoint")
+
+
+def main(args):
+    """Main training function."""
+
+    # Load configuration
+    if args.model.lower() == 'vit':
+        config = ViT3DConfig.from_yaml(args.config) if args.config else ViT3DConfig()
+    else:
+        config = MambaULightConfig.from_yaml(args.config) if args.config else MambaULightConfig()
+
+    # Override config with command line arguments
+    if args.wandb_project is not None:
+        config.wandb_project = args.wandb_project
+    if args.experiment_name is not None:
+        config.experiment_name = args.experiment_name
+    if args.batch_size is not None:
+        config.batch_size = args.batch_size
+    if args.learning_rate is not None:
+        config.learning_rate = args.learning_rate
+    if args.num_epochs is not None:
+        config.num_epochs = args.num_epochs
+
+    # Set random seed
+    set_seed(config.seed)
+
+    # Create directories
+    config.create_directories()
+
+    # Initialize wandb
+    if WANDB_AVAILABLE and config.wandb_project is not None:
+        wandb.init(
+            project=config.wandb_project,
+            name=config.experiment_name,
+            config=config.to_dict(),
+        )
+
+    # Create model
+    device = torch.device(config.device if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+
+    # Freeze decoders if specified in config or args
+    freeze_decoders = getattr(config, 'freeze_decoders', False) or args.freeze_decoders
+
+    model = create_model(config, model_type=args.model, freeze_decoders=freeze_decoders)
+    model = model.to(device)
+
+    # Print model details
+    if args.verbose:
+        from src.vit_model import print_model_details
+        print_model_details(model)
+
+    # Create optimizer and scheduler
+    optimizer = create_optimizer(model, config)
+    scheduler = create_scheduler(optimizer, config)
+
+    # Mixed precision training
+    scaler = GradScaler() if args.amp else None
+
+    # Load checkpoint if resuming
+    start_epoch = 0
+    best_loss = float('inf')
+    if args.resume is not None:
+        start_epoch, best_loss = load_checkpoint(
+            args.resume, model, optimizer, scheduler
+        )
+
+    # Load pretrained decoders if specified (useful for ViT encoder training)
+    if args.pretrained_decoders is not None:
+        load_pretrained_decoders(args.pretrained_decoders, model)
+
+    # Create datasets and dataloaders
+    # TODO: Replace with actual dataset
+    train_dataset = DummyDataset(
+        num_samples=100,
+        img_size=config.img_size,
+        in_chans=1,
+    )
+    val_dataset = DummyDataset(
+        num_samples=20,
+        img_size=config.img_size,
+        in_chans=1,
+    )
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=config.num_workers,
+        pin_memory=True,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=config.num_workers,
+        pin_memory=True,
+    )
+
+    print(f"Training with {len(train_dataset)} samples, validating with {len(val_dataset)} samples")
+
+    # Training loop
+    for epoch in range(start_epoch + 1, config.num_epochs + 1):
+        # Train
+        train_metrics = train_epoch(
+            model, train_loader, optimizer, device, epoch, config, scaler
+        )
+
+        print(f"Epoch {epoch}/{config.num_epochs} - Train Loss: {train_metrics['loss']:.4f}")
+
+        # Validate
+        if epoch % config.val_interval == 0:
+            val_metrics = validate(
+                model, val_loader, device, epoch, config
+            )
+            print(f"Epoch {epoch}/{config.num_epochs} - Val Loss: {val_metrics['loss']:.4f}")
+
+            # Save best checkpoint
+            if val_metrics['loss'] < best_loss:
+                best_loss = val_metrics['loss']
+                save_checkpoint(
+                    model, optimizer, scheduler, epoch, best_loss, config,
+                    f"{config.experiment_name}_best.pth"
+                )
+
+        # Save periodic checkpoint
+        if epoch % config.save_interval == 0:
+            save_checkpoint(
+                model, optimizer, scheduler, epoch, best_loss, config,
+                f"{config.experiment_name}_epoch_{epoch}.pth"
+            )
+
+        # Step scheduler
+        if scheduler is not None:
+            if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(val_metrics['loss'])
+            else:
+                scheduler.step()
+
+        # Log learning rate
+        if WANDB_AVAILABLE and config.wandb_project is not None:
+            wandb.log({
+                'learning_rate': optimizer.param_groups[0]['lr'],
+                'epoch': epoch,
+            })
+
+    # Save final checkpoint
+    save_checkpoint(
+        model, optimizer, scheduler, config.num_epochs, best_loss, config,
+        f"{config.experiment_name}_final.pth"
+    )
+
+    # Finish wandb
+    if WANDB_AVAILABLE and config.wandb_project is not None:
+        wandb.finish()
+
+    print("Training complete!")
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Finetune Mamba/ViT with wandb')
+
+    # Model arguments
+    parser.add_argument('--model', type=str, required=True, choices=['vit', 'mamba'],
+                        help='Model type to train')
+    parser.add_argument('--config', type=str, default=None,
+                        help='Path to config YAML file')
+
+    # Training arguments
+    parser.add_argument('--batch_size', type=int, default=None,
+                        help='Batch size (overrides config)')
+    parser.add_argument('--learning_rate', type=float, default=None,
+                        help='Learning rate (overrides config)')
+    parser.add_argument('--num_epochs', type=int, default=None,
+                        help='Number of epochs (overrides config)')
+    parser.add_argument('--resume', type=str, default=None,
+                        help='Path to checkpoint to resume from')
+    parser.add_argument('--amp', action='store_true',
+                        help='Use automatic mixed precision')
+
+    # Logging arguments
+    parser.add_argument('--wandb_project', type=str, default=None,
+                        help='Weights & Biases project name')
+    parser.add_argument('--experiment_name', type=str, default=None,
+                        help='Experiment name for logging')
+    parser.add_argument('--verbose', action='store_true',
+                        help='Print detailed model information')
+
+    # Transfer learning arguments
+    parser.add_argument('--freeze_decoders', action='store_true',
+                        help='Freeze decoder parameters (train encoder only)')
+    parser.add_argument('--pretrained_decoders', type=str, default=None,
+                        help='Path to checkpoint with pretrained decoders (e.g., trained Mamba model)')
+
+    args = parser.parse_args()
+
+    main(args)
