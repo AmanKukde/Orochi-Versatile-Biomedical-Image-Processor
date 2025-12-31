@@ -50,7 +50,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from orochi.configs.model_configs import ViT3DConfig, MambaULightConfig
 from src.vit_model import ViTULight
-from src.ours_mamba import MambaULight
+
+# Try to import Mamba model (optional if mamba_ssm not installed)
+try:
+    from src.ours_mamba import MambaULight
+    MAMBA_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️  Warning: Could not import MambaULight (mamba_ssm not available)")
+    print(f"   Error: {e}")
+    print(f"   Mamba model will not be available. Use --model vit instead.")
+    MAMBA_AVAILABLE = False
+    MambaULight = None
+
 import src.utils as utils
 
 
@@ -124,6 +135,11 @@ def create_model(config, model_type='vit', freeze_decoders=False):
         print(f"Creating Vision Transformer model with {sum(config.depths)} blocks")
         model = ViTULight(config)
     elif model_type.lower() == 'mamba':
+        if not MAMBA_AVAILABLE:
+            raise ValueError(
+                "Mamba model requested but mamba_ssm is not available.\n"
+                "Please install mamba_ssm or use --model vit instead."
+            )
         print(f"Creating Mamba model with {sum(config.depths)} blocks")
         model = MambaULight(config)
     else:

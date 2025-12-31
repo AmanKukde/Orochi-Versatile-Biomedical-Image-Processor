@@ -43,7 +43,6 @@ import torch.nn.functional as F
 import torch.nn.functional as nnf
 import torch.utils.checkpoint as checkpoint
 from einops import rearrange
-from mamba_ssm.modules.mamba2 import Mamba2
 from timm.models.layers import DropPath, to_2tuple, to_3tuple, trunc_normal_
 from timm.models.vision_transformer import _load_weights
 from torch import Tensor
@@ -51,6 +50,16 @@ from torch.distributions.normal import Normal
 
 # Local imports
 import losses
+
+# Try to import Mamba SSM (optional - only needed for MambaULight model)
+try:
+    from mamba_ssm.modules.mamba2 import Mamba2
+    MAMBA_SSM_AVAILABLE = True
+except ImportError:
+    MAMBA_SSM_AVAILABLE = False
+    Mamba2 = None
+    print("⚠️  Warning: mamba_ssm not installed. MambaULight model will not be available.")
+    print("   Decoders and utility classes can still be used with ViT.")
 
 # Try to import optional Triton-optimized operations
 try:
@@ -436,6 +445,12 @@ def create_block(
     Returns:
         Block instance with configured mixer and normalization
     """
+    if not MAMBA_SSM_AVAILABLE:
+        raise ImportError(
+            "Mamba2 is required to create Mamba blocks but mamba_ssm is not installed.\n"
+            "Please install mamba_ssm or use ViT model instead."
+        )
+
     if ssm_cfg is None:
         ssm_cfg = {}
     mixer_cls = partial(Mamba2, layer_idx=layer_idx)
@@ -524,6 +539,13 @@ class MambaEncoderHeria(nn.Module):
 
     def __init__(self, config, **kwargs):
         super().__init__()
+
+        if not MAMBA_SSM_AVAILABLE:
+            raise ImportError(
+                "MambaEncoderHeria requires mamba_ssm but it is not installed.\n"
+                "Please install mamba_ssm or use ViTEncoderHiera instead."
+            )
+
         self.residual_in_fp32 = config.residual_in_fp32
         self.fused_add_norm = config.fused_add_norm
         self.img_size = config.img_size
@@ -1217,6 +1239,13 @@ class MambaULight(nn.Module):
 
     def __init__(self, config):
         super(MambaULight, self).__init__()
+
+        if not MAMBA_SSM_AVAILABLE:
+            raise ImportError(
+                "MambaULight requires mamba_ssm but it is not installed.\n"
+                "Please install mamba_ssm or use ViTULight instead."
+            )
+
         self.if_convskip = config.if_convskip
         self.if_transskip = config.if_transskip
         self.embed_dim = config.embed_dim
