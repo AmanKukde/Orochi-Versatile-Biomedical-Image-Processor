@@ -40,7 +40,7 @@ deterministic: false
 
 # Model architecture
 img_size: [64, 128, 128]
-patch_size: 4
+patch_size: 16  # Reduced from 4 to avoid OOM - fewer patches = less memory
 in_chans: 2
 out_chans: 3
 embed_dim: 128  # Match pretrained Mamba checkpoint
