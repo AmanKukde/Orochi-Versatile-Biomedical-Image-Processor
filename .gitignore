@@ -8,3 +8,4 @@
 *.json
 *yaml
 wandb/*
+pretrained_checkpoints/
