@@ -713,6 +713,44 @@ def load_pretrained_decoders(
         if count > 0:
             print(f"  - {decoder_name}: {count} parameters")
 
+    # Inflate 2D weights to 3D if needed
+    print(f"\n{'='*60}")
+    print("Checking for 2D→3D weight inflation")
+    print(f"{'='*60}")
+
+    inflated_count = 0
+    for key, value in list(decoder_state.items()):
+        # Check if this is a Conv weight that needs inflation
+        if 'weight' in key and value.ndim == 4:  # 2D conv: [out_ch, in_ch, H, W]
+            # Get corresponding parameter in model to check expected shape
+            try:
+                model_param = model.state_dict()[key]
+                if model_param.ndim == 5:  # Model expects 3D conv: [out_ch, in_ch, D, H, W]
+                    # Inflate 2D → 3D by repeating along depth dimension and averaging
+                    out_ch, in_ch, h, w = value.shape
+                    target_d = model_param.shape[2]
+
+                    # Repeat along depth dimension
+                    inflated_weight = value.unsqueeze(2).repeat(1, 1, target_d, 1, 1)
+
+                    # Average to preserve magnitude (divide by depth)
+                    inflated_weight = inflated_weight / target_d
+
+                    decoder_state[key] = inflated_weight
+                    inflated_count += 1
+
+                    if inflated_count <= 3:  # Show first few
+                        print(f"✓ Inflated {key}: {value.shape} → {inflated_weight.shape}")
+            except KeyError:
+                # Parameter not in model, will be caught by load_state_dict
+                pass
+
+    if inflated_count > 0:
+        print(f"\n✓ Inflated {inflated_count} conv weights from 2D to 3D")
+    else:
+        print("✓ No weight inflation needed (weights already match model dimensions)")
+    print(f"{'='*60}\n")
+
     # Load decoder weights
     missing, unexpected = model.load_state_dict(decoder_state, strict=False)
 

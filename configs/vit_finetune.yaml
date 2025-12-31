@@ -43,7 +43,7 @@ img_size: [64, 128, 128]
 patch_size: 4
 in_chans: 2
 out_chans: 3
-embed_dim: 96
+embed_dim: 128  # Match pretrained Mamba checkpoint
 depths: [2, 2, 4, 2]
 num_heads: 8
 
@@ -61,7 +61,7 @@ out_indices: [0, 1, 2, 3]
 if_convskip: true
 if_transskip: true
 pat_merg_rf: 2
-decoder_head_chan: 32
+decoder_head_chan: 64  # Match pretrained Mamba checkpoint (was 32, now 64)
 grid_size: [64, 128, 128]
 window_size: [7, 7, 7]
 use_checkpoint: false
