@@ -71,11 +71,18 @@ class ViTULight(nn.Module):
         self.spatial_trans = SpatialTransformer(config.grid_size)
         self.grid_img = self.create_grid_image()
 
+        # Create decoder config with patch_size=4 (what pretrained decoders expect)
+        # The ViT encoder uses patch_size=16 for memory efficiency, but interpolates
+        # outputs to match patch_size=4 dimensions
+        import copy
+        decoder_config = copy.deepcopy(config)
+        decoder_config.patch_size = 4  # Match pretrained Mamba decoder expectations
+
         # Task-specific decoders (reuse from ours_mamba)
-        self.reg_decoder = reg_decoder(config)
-        self.fus_decoder = fus_decoder(config)
-        self.SR_decoder = SR_decoder(config)
-        self.IR_decoder = IR_decoder(config)
+        self.reg_decoder = reg_decoder(decoder_config)
+        self.fus_decoder = fus_decoder(decoder_config)
+        self.SR_decoder = SR_decoder(decoder_config)
+        self.IR_decoder = IR_decoder(decoder_config)
 
         # Loss functions
         self.mse = nn.MSELoss()
