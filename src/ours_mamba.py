@@ -912,6 +912,11 @@ class ConvDecoderBlock(nn.Module):
         """
         x = self.up(x)
         if skip is not None:
+            # Handle spatial dimension mismatch by interpolating x to match skip
+            if x.shape[2:] != skip.shape[2:]:
+                x = torch.nn.functional.interpolate(
+                    x, size=skip.shape[2:], mode='trilinear', align_corners=False
+                )
             x = torch.cat([x, skip], dim=1)
         x = self.conv1(x)
         x = self.conv2(x)
