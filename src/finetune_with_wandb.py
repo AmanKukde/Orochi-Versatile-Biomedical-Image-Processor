@@ -499,6 +499,139 @@ def load_checkpoint(
     return epoch, best_loss
 
 
+def load_pretrained_vit_encoder(
+    model: nn.Module,
+    pretrained_model_name: str = "google/vit-base-patch16-224",
+    freeze_early_layers: bool = True,
+    num_frozen_layers: int = 8,
+) -> None:
+    """Load pretrained ViT encoder weights from HuggingFace.
+
+    Loads 2D ViT weights and adapts them for 3D medical imaging by inflating
+    the weights. This provides better initialization than random weights.
+
+    Args:
+        model: ViTULight model to load weights into
+        pretrained_model_name: HuggingFace model name (e.g., 'google/vit-base-patch16-224')
+        freeze_early_layers: Whether to freeze early transformer layers
+        num_frozen_layers: Number of early layers to freeze (if freeze_early_layers=True)
+    """
+    try:
+        from transformers import ViTModel
+    except ImportError:
+        print("❌ transformers not installed. Install with: pip install transformers")
+        print("Skipping pretrained weight loading.")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"Loading pretrained ViT weights from: {pretrained_model_name}")
+    print(f"{'='*60}")
+
+    # Load pretrained 2D ViT
+    try:
+        pretrained_vit = ViTModel.from_pretrained(pretrained_model_name)
+        print(f"✓ Successfully downloaded pretrained model")
+    except Exception as e:
+        print(f"❌ Failed to load pretrained model: {e}")
+        return
+
+    # Get encoder from model
+    if hasattr(model, 'encoder'):
+        encoder = model.encoder
+    else:
+        print("❌ Model doesn't have 'encoder' attribute")
+        return
+
+    # Load compatible weights
+    loaded_count = 0
+
+    # Load patch embedding weights (inflate 2D to 3D)
+    if hasattr(pretrained_vit.embeddings, 'patch_embeddings'):
+        pretrained_patch_weight = pretrained_vit.embeddings.patch_embeddings.projection.weight
+
+        # Inflate 2D conv weights to 3D by repeating along depth dimension
+        if hasattr(encoder.patch_embed, 'proj'):
+            patch_size_depth = encoder.patch_embed.proj.kernel_size[0]
+            inflated_weight = pretrained_patch_weight.unsqueeze(2).repeat(1, 1, patch_size_depth, 1, 1)
+            inflated_weight = inflated_weight / patch_size_depth  # Average
+
+            # Copy if dimensions match
+            if inflated_weight.shape == encoder.patch_embed.proj.weight.shape:
+                encoder.patch_embed.proj.weight.data.copy_(inflated_weight)
+                loaded_count += 1
+                print(f"✓ Loaded patch embedding weights (inflated 2D→3D)")
+            else:
+                print(f"⚠️  Patch embedding size mismatch: {inflated_weight.shape} vs {encoder.patch_embed.proj.weight.shape}")
+
+    # Load transformer layer weights
+    if hasattr(pretrained_vit.encoder, 'layer'):
+        num_layers = min(len(pretrained_vit.encoder.layer), len(encoder.layers))
+
+        for i in range(num_layers):
+            pretrained_layer = pretrained_vit.encoder.layer[i]
+            our_layer = encoder.layers[i]
+
+            # Load attention weights
+            if hasattr(our_layer, 'blocks') and len(our_layer.blocks) > 0:
+                for block_idx, block in enumerate(our_layer.blocks):
+                    if hasattr(block, 'attn') and hasattr(pretrained_layer, 'attention'):
+                        # Load Q, K, V weights
+                        if hasattr(pretrained_layer.attention.attention, 'query'):
+                            qkv_weight = torch.cat([
+                                pretrained_layer.attention.attention.query.weight,
+                                pretrained_layer.attention.attention.key.weight,
+                                pretrained_layer.attention.attention.value.weight
+                            ], dim=0)
+
+                            if qkv_weight.shape == block.attn.qkv.weight.shape:
+                                block.attn.qkv.weight.data.copy_(qkv_weight)
+                                loaded_count += 1
+
+                        # Load output projection
+                        if hasattr(pretrained_layer.attention.output, 'dense'):
+                            if pretrained_layer.attention.output.dense.weight.shape == block.attn.proj.weight.shape:
+                                block.attn.proj.weight.data.copy_(pretrained_layer.attention.output.dense.weight)
+                                loaded_count += 1
+
+                    # Load MLP weights
+                    if hasattr(block, 'mlp') and hasattr(pretrained_layer, 'intermediate'):
+                        if pretrained_layer.intermediate.dense.weight.shape == block.mlp.fc1.weight.shape:
+                            block.mlp.fc1.weight.data.copy_(pretrained_layer.intermediate.dense.weight)
+                            loaded_count += 1
+
+                        if hasattr(pretrained_layer, 'output'):
+                            if pretrained_layer.output.dense.weight.shape == block.mlp.fc2.weight.shape:
+                                block.mlp.fc2.weight.data.copy_(pretrained_layer.output.dense.weight)
+                                loaded_count += 1
+
+    print(f"\n✓ Loaded {loaded_count} parameter groups from pretrained model")
+
+    # Freeze early layers if requested
+    if freeze_early_layers:
+        print(f"\n{'='*60}")
+        print(f"Freezing first {num_frozen_layers} transformer layers")
+        print(f"{'='*60}")
+
+        frozen_params = 0
+        for i in range(min(num_frozen_layers, len(encoder.layers))):
+            for param in encoder.layers[i].parameters():
+                param.requires_grad = False
+                frozen_params += param.numel()
+
+        # Also freeze patch embedding
+        for param in encoder.patch_embed.parameters():
+            param.requires_grad = False
+            frozen_params += param.numel()
+
+        trainable_params = sum(p.numel() for p in encoder.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in encoder.parameters())
+
+        print(f"✓ Frozen {frozen_params:,} parameters in encoder")
+        print(f"✓ Trainable encoder parameters: {trainable_params:,} ({100*trainable_params/total_params:.1f}%)")
+
+    print(f"{'='*60}\n")
+
+
 def load_pretrained_decoders(
     checkpoint_path: str,
     model: nn.Module,
@@ -516,7 +649,11 @@ def load_pretrained_decoders(
         model: Model to load decoder weights into (typically ViTULight)
         strict: Whether to strictly enforce that keys match
     """
-    print(f"Loading pretrained decoders from {checkpoint_path}")
+    print(f"\n{'='*60}")
+    print(f"Loading pretrained decoders from checkpoint")
+    print(f"{'='*60}")
+    print(f"Checkpoint: {checkpoint_path}")
+
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
 
     # Get state dict - try multiple common keys
@@ -548,11 +685,11 @@ def load_pretrained_decoders(
             decoder_state[key] = value
 
     if len(decoder_state) == 0:
-        print("WARNING: No decoder parameters found in checkpoint!")
+        print("❌ WARNING: No decoder parameters found in checkpoint!")
         print(f"Available keys (first 10): {list(cleaned_state.keys())[:10]}")
         return
 
-    print(f"Found {len(decoder_state)} decoder parameters to load")
+    print(f"\nFound {len(decoder_state)} decoder parameters to load")
 
     # Show breakdown by decoder
     for decoder_name in decoder_keywords:
@@ -563,7 +700,7 @@ def load_pretrained_decoders(
     # Load decoder weights
     missing, unexpected = model.load_state_dict(decoder_state, strict=False)
 
-    print(f"\nSuccessfully loaded decoder weights!")
+    print(f"\n✓ Successfully loaded decoder weights!")
 
     if missing:
         # Filter out encoder parameters from missing (those are expected)
@@ -577,6 +714,8 @@ def load_pretrained_decoders(
         print(f"⚠️  Warning: {len(unexpected)} unexpected parameters in checkpoint")
         if len(unexpected) <= 10:
             print(f"Unexpected: {unexpected}")
+
+    print(f"{'='*60}\n")
 
 
 def main(args):
@@ -636,17 +775,54 @@ def main(args):
     # Mixed precision training
     scaler = GradScaler() if args.amp else None
 
-    # Load checkpoint if resuming
+    # Load pretrained ViT encoder from HuggingFace (only for ViT model)
+    if args.model.lower() == 'vit' and args.pretrained_vit is not None:
+        load_pretrained_vit_encoder(
+            model,
+            pretrained_model_name=args.pretrained_vit,
+            freeze_early_layers=args.freeze_vit_early_layers,
+            num_frozen_layers=args.num_frozen_vit_layers,
+        )
+
+    # Load pretrained decoders if specified (useful for ViT encoder training)
+    if args.pretrained_decoders is not None:
+        load_pretrained_decoders(args.pretrained_decoders, model)
+
+        # Optionally unfreeze last N decoder layers for fine-tuning
+        if hasattr(args, 'unfreeze_decoder_layers') and args.unfreeze_decoder_layers > 0:
+            print(f"\n{'='*60}")
+            print(f"Unfreezing last {args.unfreeze_decoder_layers} layers of each decoder")
+            print(f"{'='*60}")
+
+            for decoder_name in ['reg_decoder', 'fus_decoder', 'SR_decoder', 'IR_decoder']:
+                if hasattr(model, decoder_name):
+                    decoder = getattr(model, decoder_name)
+                    if hasattr(decoder, 'decoder') and hasattr(decoder.decoder, 'children'):
+                        decoder_layers = list(decoder.decoder.children())
+                        # Unfreeze last N layers
+                        for layer in decoder_layers[-args.unfreeze_decoder_layers:]:
+                            for param in layer.parameters():
+                                param.requires_grad = True
+
+                    # Always unfreeze the head for fine-tuning
+                    if hasattr(decoder, 'head'):
+                        for param in decoder.head.parameters():
+                            param.requires_grad = True
+
+            trainable_decoder_params = sum(
+                p.numel() for name, p in model.named_parameters()
+                if p.requires_grad and any(d in name for d in ['reg_decoder', 'fus_decoder', 'SR_decoder', 'IR_decoder'])
+            )
+            print(f"✓ Trainable decoder parameters: {trainable_decoder_params:,}")
+            print(f"{'='*60}\n")
+
+    # Load checkpoint if resuming (do this after pretrained loading)
     start_epoch = 0
     best_loss = float('inf')
     if args.resume is not None:
         start_epoch, best_loss = load_checkpoint(
             args.resume, model, optimizer, scheduler
         )
-
-    # Load pretrained decoders if specified (useful for ViT encoder training)
-    if args.pretrained_decoders is not None:
-        load_pretrained_decoders(args.pretrained_decoders, model)
 
     # Create datasets and dataloaders
     # TODO: Replace with actual dataset
@@ -770,6 +946,16 @@ if __name__ == '__main__':
                         help='Freeze decoder parameters (train encoder only)')
     parser.add_argument('--pretrained_decoders', type=str, default=None,
                         help='Path to checkpoint with pretrained decoders (e.g., trained Mamba model)')
+    parser.add_argument('--unfreeze_decoder_layers', type=int, default=0,
+                        help='Number of last decoder layers to unfreeze for fine-tuning (0=all frozen)')
+
+    # Pretrained ViT arguments
+    parser.add_argument('--pretrained_vit', type=str, default=None,
+                        help='HuggingFace ViT model name (e.g., google/vit-base-patch16-224)')
+    parser.add_argument('--freeze_vit_early_layers', action='store_true',
+                        help='Freeze early ViT transformer layers (recommended with pretrained weights)')
+    parser.add_argument('--num_frozen_vit_layers', type=int, default=8,
+                        help='Number of early ViT layers to freeze (default: 8 out of 12)')
 
     args = parser.parse_args()
 
