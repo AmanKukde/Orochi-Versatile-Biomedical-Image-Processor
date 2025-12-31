@@ -719,6 +719,8 @@ def load_pretrained_decoders(
     print(f"{'='*60}")
 
     inflated_count = 0
+    channel_adjusted_count = 0
+
     for key, value in list(decoder_state.items()):
         # Check if this is a Conv weight that needs inflation
         if 'weight' in key and value.ndim == 4:  # 2D conv: [out_ch, in_ch, H, W]
@@ -736,6 +738,25 @@ def load_pretrained_decoders(
                     # Average to preserve magnitude (divide by depth)
                     inflated_weight = inflated_weight / target_d
 
+                    # Check if output channels also need adjustment (e.g., 2D→3D for displacement field)
+                    if inflated_weight.shape[0] != model_param.shape[0]:
+                        target_out_ch = model_param.shape[0]
+
+                        if inflated_weight.shape[0] < target_out_ch:
+                            # Need to add channels (e.g., reg_decoder.head: 2→3 for dx,dy,dz)
+                            # Initialize new channels with zeros
+                            missing_channels = target_out_ch - inflated_weight.shape[0]
+                            zero_channels = torch.zeros(
+                                missing_channels, inflated_weight.shape[1],
+                                inflated_weight.shape[2], inflated_weight.shape[3],
+                                inflated_weight.shape[4]
+                            )
+                            inflated_weight = torch.cat([inflated_weight, zero_channels], dim=0)
+                            channel_adjusted_count += 1
+
+                            if channel_adjusted_count <= 2:
+                                print(f"✓ Adjusted output channels {key}: {out_ch}→{target_out_ch} (new channels initialized to zero)")
+
                     decoder_state[key] = inflated_weight
                     inflated_count += 1
 
@@ -745,9 +766,28 @@ def load_pretrained_decoders(
                 # Parameter not in model, will be caught by load_state_dict
                 pass
 
+        # Handle bias terms with channel mismatch
+        elif 'bias' in key:
+            try:
+                model_param = model.state_dict()[key]
+                if value.shape[0] < model_param.shape[0]:
+                    # Add zeros for missing bias terms
+                    missing_biases = model_param.shape[0] - value.shape[0]
+                    zero_biases = torch.zeros(missing_biases)
+                    adjusted_bias = torch.cat([value, zero_biases], dim=0)
+                    decoder_state[key] = adjusted_bias
+                    channel_adjusted_count += 1
+
+                    if channel_adjusted_count <= 2:
+                        print(f"✓ Adjusted bias {key}: {value.shape[0]}→{model_param.shape[0]}")
+            except KeyError:
+                pass
+
     if inflated_count > 0:
         print(f"\n✓ Inflated {inflated_count} conv weights from 2D to 3D")
-    else:
+    if channel_adjusted_count > 0:
+        print(f"✓ Adjusted {channel_adjusted_count} parameters for 2D→3D output channel mismatch")
+    if inflated_count == 0 and channel_adjusted_count == 0:
         print("✓ No weight inflation needed (weights already match model dimensions)")
     print(f"{'='*60}\n")
 
