@@ -3,3 +3,8 @@
 **/checkpoints/
 
 **/notebooks
+*.txt
+*log
+*.json
+*yaml
+wandb/*
