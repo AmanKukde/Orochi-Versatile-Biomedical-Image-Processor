@@ -568,6 +568,23 @@ class ViTEncoderHiera(nn.Module):
         # Store original input
         outs = [x.clone()]
 
+        # Calculate target dimensions that decoders expect (based on patch_size=4)
+        # This assumes decoders were trained with Mamba encoder using patch_size=4
+        target_patch_size = 4
+        base_T = self.img_size[0] // target_patch_size  # 64/4 = 16
+        base_H = self.img_size[1] // target_patch_size  # 128/4 = 32
+        base_W = self.img_size[2] // target_patch_size  # 128/4 = 32
+
+        # Expected dimensions at each stage after 2x downsampling
+        target_dims = []
+        for i in range(self.num_layers):
+            scale = 2 ** i  # Downsample factor
+            target_dims.append((
+                base_T // scale,  # T dimension
+                base_H // scale,  # H dimension
+                base_W // scale   # W dimension
+            ))
+
         # Patch embedding
         x = self.patch_embed(x)
         B, C, T, H, W = x.shape
@@ -587,6 +604,17 @@ class ViTEncoderHiera(nn.Module):
                 x_out = norm_layer(x_out)
                 out = x_out.contiguous().view(B, H, W, T, self.num_features[i])
                 out = out.permute(0, 4, 3, 1, 2)  # (B, C, T, H, W)
+
+                # Interpolate to match expected decoder dimensions
+                target_t, target_h, target_w = target_dims[i]
+                if out.shape[2:] != (target_t, target_h, target_w):
+                    out = torch.nn.functional.interpolate(
+                        out,
+                        size=(target_t, target_h, target_w),
+                        mode='trilinear',
+                        align_corners=False
+                    )
+
                 outs.append(out)
 
         return outs
