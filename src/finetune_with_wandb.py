@@ -509,6 +509,8 @@ def load_pretrained_decoders(
     This is useful for initializing ViT model with trained Mamba decoders,
     allowing the ViT encoder to learn the latent space expected by the decoders.
 
+    Handles checkpoints saved with DataParallel (module.* prefix).
+
     Args:
         checkpoint_path: Path to pretrained Mamba checkpoint
         model: Model to load decoder weights into (typically ViTULight)
@@ -517,29 +519,64 @@ def load_pretrained_decoders(
     print(f"Loading pretrained decoders from {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
 
-    # Get state dict
+    # Get state dict - try multiple common keys
     if 'model_state_dict' in checkpoint:
         pretrained_state = checkpoint['model_state_dict']
+    elif 'state_dict' in checkpoint:
+        pretrained_state = checkpoint['state_dict']
     else:
         pretrained_state = checkpoint
 
-    # Filter to only decoder parameters
-    decoder_state = {}
+    print(f"Found {len(pretrained_state)} parameters in checkpoint")
+
+    # Remove 'module.' prefix if present (from DataParallel/DistributedDataParallel)
+    cleaned_state = {}
     for key, value in pretrained_state.items():
-        if any(decoder in key for decoder in ['reg_decoder', 'fus_decoder', 'SR_decoder', 'IR_decoder', 'spatial_trans']):
+        if key.startswith('module.'):
+            # Remove 'module.' prefix
+            new_key = key[7:]  # len('module.') = 7
+            cleaned_state[new_key] = value
+        else:
+            cleaned_state[key] = value
+
+    # Filter to only decoder parameters
+    decoder_keywords = ['reg_decoder', 'fus_decoder', 'SR_decoder', 'IR_decoder']
+    decoder_state = {}
+
+    for key, value in cleaned_state.items():
+        if any(decoder in key for decoder in decoder_keywords):
             decoder_state[key] = value
+
+    if len(decoder_state) == 0:
+        print("WARNING: No decoder parameters found in checkpoint!")
+        print(f"Available keys (first 10): {list(cleaned_state.keys())[:10]}")
+        return
+
+    print(f"Found {len(decoder_state)} decoder parameters to load")
+
+    # Show breakdown by decoder
+    for decoder_name in decoder_keywords:
+        count = sum(1 for k in decoder_state.keys() if decoder_name in k)
+        if count > 0:
+            print(f"  - {decoder_name}: {count} parameters")
 
     # Load decoder weights
     missing, unexpected = model.load_state_dict(decoder_state, strict=False)
 
-    print(f"Loaded {len(decoder_state)} decoder parameters")
+    print(f"\nSuccessfully loaded decoder weights!")
+
     if missing:
         # Filter out encoder parameters from missing (those are expected)
-        missing_decoders = [k for k in missing if any(dec in k for dec in ['reg_decoder', 'fus_decoder', 'SR_decoder', 'IR_decoder'])]
+        missing_decoders = [k for k in missing if any(dec in k for dec in decoder_keywords)]
         if missing_decoders:
-            print(f"Warning: {len(missing_decoders)} decoder parameters not found in checkpoint")
+            print(f"⚠️  Warning: {len(missing_decoders)} decoder parameters not found in checkpoint")
+            if len(missing_decoders) <= 10:
+                print(f"Missing: {missing_decoders}")
+
     if unexpected:
-        print(f"Warning: {len(unexpected)} unexpected parameters in checkpoint")
+        print(f"⚠️  Warning: {len(unexpected)} unexpected parameters in checkpoint")
+        if len(unexpected) <= 10:
+            print(f"Unexpected: {unexpected}")
 
 
 def main(args):
