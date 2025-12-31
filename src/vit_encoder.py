@@ -580,14 +580,16 @@ class ViTEncoderHiera(nn.Module):
         in_T, in_H, in_W = T, H, W
         for i in range(self.num_layers):
             layer = self.layers[i]
-            x_out, T, H, W, x, in_T, in_H, in_W = layer(x, in_T, in_H, in_W)
+            # Layer.forward signature: (x, H, W, T) -> (x, H, W, T, x_down, Wh, Ww, Wt)
+            x_out, H, W, T, x, Wh, Ww, Wt = layer(x, in_H, in_W, in_T)
+            in_T, in_H, in_W = Wt, Wh, Ww  # Update dimensions for next layer
 
             # Add output features if this stage is in out_indices
             if i in self.out_indices:
                 norm_layer = getattr(self, f"norm{i}")
                 x_out = norm_layer(x_out)
-                out = x_out.contiguous().view(B, in_T, in_H, in_W, self.num_features[i])
-                out = out.permute(0, 4, 1, 2, 3)  # (B, C, T, H, W)
+                out = x_out.contiguous().view(B, H, W, T, self.num_features[i])
+                out = out.permute(0, 4, 3, 1, 2)  # (B, C, T, H, W)
                 outs.append(out)
 
         return outs
