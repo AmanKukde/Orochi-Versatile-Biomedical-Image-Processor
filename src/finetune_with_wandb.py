@@ -28,6 +28,7 @@ import random
 import sys
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+import glob
 
 import numpy as np
 import torch
@@ -35,7 +36,9 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, Dataset
+from torch.nn import functional as F
 from tqdm import tqdm
+import tifffile
 
 # wandb import
 try:
@@ -115,6 +118,113 @@ class DummyDataset(Dataset):
             'image': image,
             'idx': idx,
         }
+
+
+class BiomedicalDataset(Dataset):
+    """Simplified biomedical dataset matching original preprocessing.
+
+    Based on Pretrain_Dataset from temp/experiments/3D/datasets.py.
+    Uses min-max normalization and conditional upsampling.
+
+    Args:
+        data_root: Root directory with dataset folders
+        datasets: List of dataset names (e.g., ['hipsc_3d', 'hipsc_2d'])
+        img_size: Target size (D, H, W)
+        split: 'train' or 'val'
+        val_split: Validation split ratio (default: 0.1)
+    """
+
+    def __init__(
+        self,
+        data_root="/group/jug/aman/orochi/data",
+        datasets=['hipsc_3d'],
+        img_size=(64, 128, 128),
+        split='train',
+        val_split=0.1
+    ):
+        self.data_root = Path(data_root)
+        self.img_size = img_size
+
+        # Collect image files (.tiff, .tif, .npy)
+        self.image_files = []
+        for dataset_name in datasets:
+            dataset_path = self.data_root / dataset_name
+            if not dataset_path.exists():
+                print(f"⚠️  Dataset not found: {dataset_path}")
+                continue
+
+            if dataset_name == 'hipsc_3d':
+                # Protein subdirectories
+                for protein_dir in dataset_path.iterdir():
+                    if protein_dir.is_dir():
+                        self.image_files.extend(protein_dir.glob('*.tif*'))
+                        self.image_files.extend(protein_dir.glob('*.npy'))
+            else:
+                # data/ subdirectory
+                data_dir = dataset_path / 'data'
+                if data_dir.exists():
+                    self.image_files.extend(data_dir.glob('*.tif*'))
+                    self.image_files.extend(data_dir.glob('*.npy'))
+
+        # Sort and split
+        self.image_files = sorted(self.image_files)
+        n_total = len(self.image_files)
+        n_val = int(n_total * val_split)
+
+        if split == 'train':
+            self.image_files = self.image_files[:n_total - n_val]
+        else:
+            self.image_files = self.image_files[n_total - n_val:]
+
+        print(f"📁 {split.capitalize()}: {len(self.image_files)} images from {datasets}")
+
+    def __len__(self):
+        return len(self.image_files)
+
+    def __getitem__(self, idx):
+        """Load and preprocess image (original approach)."""
+        img_path = self.image_files[idx]
+
+        # Load image
+        if img_path.suffix == '.npy':
+            raw_image = np.load(str(img_path))
+        else:  # .tiff, .tif
+            raw_image = tifffile.imread(str(img_path))
+
+        # To tensor with channel dimension
+        image_tensor = torch.from_numpy(raw_image).float().unsqueeze(0)
+
+        # Min-max normalization (original approach)
+        image_tensor = (image_tensor - image_tensor.min()) / (
+            image_tensor.max() - image_tensor.min() + 1e-8
+        )
+
+        # Conditional upsampling (original logic)
+        image_tensor = self._upsample(image_tensor)
+
+        return {
+            'image': image_tensor,
+            'idx': idx,
+        }
+
+    def _upsample(self, image_tensor):
+        """Upsample if smaller than target (original logic)."""
+        d, h, w = image_tensor.shape[1:]  # (C, D, H, W)
+        td, th, tw = self.img_size
+
+        d_factor = max(1, td / d)
+        h_factor = max(1, th / h)
+        w_factor = max(1, tw / w)
+
+        if d_factor > 1 or h_factor > 1 or w_factor > 1:
+            image_tensor = F.interpolate(
+                image_tensor.unsqueeze(0),
+                size=(int(d * d_factor), int(h * h_factor), int(w * w_factor)),
+                mode='trilinear',
+                align_corners=False
+            ).squeeze(0)
+
+        return image_tensor
 
 
 def create_model(config, model_type='vit', freeze_decoders=False):
@@ -919,16 +1029,20 @@ def main(args):
         )
 
     # Create datasets and dataloaders
-    # TODO: Replace with actual dataset
-    train_dataset = DummyDataset(
-        num_samples=100,
+    # Load real biomedical datasets (simplified approach matching original)
+    train_dataset = BiomedicalDataset(
+        data_root="/group/jug/aman/orochi/data",
+        datasets=['hipsc_3d', 'hipsc_2d', 'hipct_2d', 'idr_2d'],
         img_size=config.img_size,
-        in_chans=1,
+        split='train',
+        val_split=0.1
     )
-    val_dataset = DummyDataset(
-        num_samples=20,
+    val_dataset = BiomedicalDataset(
+        data_root="/group/jug/aman/orochi/data",
+        datasets=['hipsc_3d', 'hipsc_2d', 'hipct_2d', 'idr_2d'],
         img_size=config.img_size,
-        in_chans=1,
+        split='val',
+        val_split=0.1
     )
 
     train_loader = DataLoader(
