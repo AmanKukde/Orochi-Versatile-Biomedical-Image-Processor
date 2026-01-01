@@ -78,8 +78,8 @@ norm_epsilon: 0.00001
 initializer_cfg: null
 
 # Task-specific
-# Options: 'ir' (isotropic restoration), 'reg' (registration), 'fus' (fusion), 'sr' (super-resolution), 'multi_task'
-task: ir  # Single task for faster training (4x speedup)
+# Options: 'isotropic_restoration', 'registration', 'fusion', 'super_resolution', 'multi_task'
+task: isotropic_restoration  # Single task for faster training (4x speedup)
 
 # Pretrained - set this to path of trained Mamba checkpoint
 pretrained_path: "/home/aman.kukde/MambaSplit/Orochi-Versatile-Biomedical-Image-Processor/pretrained_checkpoints/mamba_fm_3d.pth.tar"

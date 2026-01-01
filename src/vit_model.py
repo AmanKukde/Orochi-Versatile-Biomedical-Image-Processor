@@ -108,15 +108,25 @@ class ViTULight(nn.Module):
         logits = {"raw": raw.detach().cpu().numpy()}
         aux_loss = {"mse": {}, "ncc": {}, "grad": {}}
 
+        # Map full task names to short names for internal use
+        task_mapping = {
+            'isotropic_restoration': 'ir',
+            'registration': 'reg',
+            'fusion': 'fus',
+            'super_resolution': 'sr',
+            'multi_task': 'multi_task'
+        }
+
         # Determine which tasks to run
-        tasks_to_run = []
-        if self.task == 'multi_task':
+        task_key = task_mapping.get(self.task, self.task)
+
+        if task_key == 'multi_task':
             tasks_to_run = ['reg', 'fus', 'sr', 'ir']
         else:
-            tasks_to_run = [self.task.lower()]
+            tasks_to_run = [task_key]
 
         # DEBUG: Print task info (remove after debugging)
-        print(f"DEBUG: self.task={self.task}, tasks_to_run={tasks_to_run}")
+        print(f"DEBUG: self.task={self.task}, task_key={task_key}, tasks_to_run={tasks_to_run}")
 
         # Registration task
         if 'reg' in tasks_to_run:
