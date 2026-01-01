@@ -986,8 +986,10 @@ def main(args):
         )
 
     # Load pretrained decoders if specified (useful for ViT encoder training)
-    if args.pretrained_decoders is not None:
-        load_pretrained_decoders(args.pretrained_decoders, model)
+    pretrained_decoder_path = args.pretrained_decoders or getattr(config, 'pretrained_path', None)
+    if pretrained_decoder_path is not None:
+        print(f"\nLoading pretrained decoders from: {pretrained_decoder_path}")
+        load_pretrained_decoders(pretrained_decoder_path, model)
 
         # Optionally unfreeze last N decoder layers for fine-tuning
         if hasattr(args, 'unfreeze_decoder_layers') and args.unfreeze_decoder_layers > 0:
