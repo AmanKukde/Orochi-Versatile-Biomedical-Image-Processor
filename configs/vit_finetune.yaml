@@ -39,8 +39,8 @@ seed: 42
 deterministic: false
 
 # Model architecture
-img_size: [64, 256, 256]
-grid_size: [64, 256, 256]
+img_size: [64, 128, 128]  # Downsample to fit in 16GB GPU memory
+grid_size: [64, 128, 128]  # Match img_size for SpatialTransformer
 # patch_size: 4  #Original Patch size of iJepa
 patch_size: 16 # Reduced from 4 to avoid OOM - fewer patches = less memory
 

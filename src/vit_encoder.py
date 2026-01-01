@@ -572,8 +572,8 @@ class ViTEncoderHiera(nn.Module):
         # This assumes decoders were trained with Mamba encoder using patch_size=4
         target_patch_size = 4
         base_T = self.img_size[0] // target_patch_size  # e.g., 64/4 = 16
-        base_H = self.img_size[1] // target_patch_size  # e.g., 256/4 = 64
-        base_W = self.img_size[2] // target_patch_size  # e.g., 256/4 = 64
+        base_H = self.img_size[1] // target_patch_size  # e.g., 128/4 = 32
+        base_W = self.img_size[2] // target_patch_size  # e.g., 128/4 = 32
 
         # Expected dimensions at each stage after 2x downsampling
         target_dims = []

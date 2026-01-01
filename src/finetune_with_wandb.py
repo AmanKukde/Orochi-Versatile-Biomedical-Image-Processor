@@ -199,27 +199,24 @@ class BiomedicalDataset(Dataset):
             image_tensor.max() - image_tensor.min() + 1e-8
         )
 
-        # Conditional upsampling (original logic)
-        image_tensor = self._upsample(image_tensor)
+        # Resize to target size (upsample or downsample as needed)
+        image_tensor = self._resize(image_tensor)
 
         return {
             'image': image_tensor,
             'idx': idx,
         }
 
-    def _upsample(self, image_tensor):
-        """Upsample if smaller than target (original logic)."""
+    def _resize(self, image_tensor):
+        """Resize to target size (upsample or downsample as needed)."""
         d, h, w = image_tensor.shape[1:]  # (C, D, H, W)
         td, th, tw = self.img_size
 
-        d_factor = max(1, td / d)
-        h_factor = max(1, th / h)
-        w_factor = max(1, tw / w)
-
-        if d_factor > 1 or h_factor > 1 or w_factor > 1:
+        # Resize if dimensions don't match target
+        if (d, h, w) != (td, th, tw):
             image_tensor = F.interpolate(
                 image_tensor.unsqueeze(0),
-                size=(int(d * d_factor), int(h * h_factor), int(w * w_factor)),
+                size=(td, th, tw),
                 mode='trilinear',
                 align_corners=False
             ).squeeze(0)
