@@ -420,7 +420,7 @@ def train_epoch(
 
         # Forward pass
         if scaler is not None:
-            with autocast():
+            with torch.amp.autocast():
                 logits, aux_loss = model(images)
                 loss = compute_total_loss(aux_loss)
         else:
