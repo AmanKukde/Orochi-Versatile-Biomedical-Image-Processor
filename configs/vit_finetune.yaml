@@ -13,7 +13,7 @@ gpu_ids: [0]
 num_workers: 4
 
 # Training
-batch_size: 2
+batch_size: 1
 num_epochs: 100
 learning_rate: 0.0001
 weight_decay: 0.00001
@@ -40,13 +40,15 @@ deterministic: false
 
 # Model architecture
 img_size: [64, 256, 256]
+grid_size: [64, 256, 256]
+# patch_size: 4  #Original Patch size of iJepa
 patch_size: 16 # Reduced from 4 to avoid OOM - fewer patches = less memory
-patch_size: 4  #Original Patch size of iJepa
+
 in_chans: 2
 out_chans: 3
 embed_dim: 128  # Match pretrained Mamba checkpoint
 depths: [2, 2, 4, 2]
-num_heads: 8
+num_heads: 4
 
 # ViT-specific parameters
 mlp_ratio: 4.0
@@ -56,14 +58,14 @@ proj_drop_rate: 0.0
 
 # Architecture details
 patch_norm: true
-drop_rate: 0.0
+drop_rate: 0.5
 drop_path_rate: 0.1
 out_indices: [0, 1, 2, 3]
 if_convskip: true
 if_transskip: true
 pat_merg_rf: 2
 decoder_head_chan: 16  # Match 3D Mamba checkpoint (mamba_fm_3d.pth.tar)
-grid_size: [64, 256, 256]
+
 window_size: [7, 7, 7]
 use_checkpoint: false
 
@@ -79,6 +81,6 @@ initializer_cfg: null
 task: multi_task
 
 # Pretrained - set this to path of trained Mamba checkpoint
-pretrained_path: null
+pretrained_path: "/home/aman.kukde/MambaSplit/Orochi-Versatile-Biomedical-Image-Processor/pretrained_checkpoints/mamba_fm_3d.pth.tar"
 freeze_encoder: false
 freeze_decoders: true  # IMPORTANT: Freeze decoders when training ViT encoder
