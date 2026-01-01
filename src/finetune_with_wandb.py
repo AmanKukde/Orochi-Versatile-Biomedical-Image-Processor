@@ -28,6 +28,7 @@ import random
 import sys
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+import glob
 
 import numpy as np
 import torch
@@ -36,6 +37,8 @@ import torch.optim as optim
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
+from skimage import io
+import nibabel as nib
 
 # wandb import
 try:
@@ -115,6 +118,148 @@ class DummyDataset(Dataset):
             'image': image,
             'idx': idx,
         }
+
+
+class BiomedicalDataset(Dataset):
+    """Dataset for loading biomedical images from Hugging Face datasets.
+
+    Supports multiple dataset types:
+    - hiPSC 2D/3D
+    - HiP-CT 2D
+    - IDR 2D/Raw
+
+    Args:
+        data_root: Root directory containing dataset folders
+        datasets: List of dataset names to load (e.g., ['hipsc_2d', 'hipsc_3d'])
+        img_size: Target image size [D, H, W] for 3D or [H, W] for 2D
+        in_chans: Number of input channels (default: 1)
+        split: 'train' or 'val'
+        val_split: Fraction of data to use for validation (default: 0.1)
+    """
+
+    def __init__(
+        self,
+        data_root="/group/jug/aman/orochi/data",
+        datasets=['hipsc_3d'],
+        img_size=(64, 128, 128),
+        in_chans=2,
+        split='train',
+        val_split=0.1
+    ):
+        self.data_root = Path(data_root)
+        self.datasets = datasets
+        self.img_size = img_size
+        self.in_chans = in_chans
+        self.split = split
+        self.val_split = val_split
+
+        # Collect all image files
+        self.image_files = []
+        for dataset_name in datasets:
+            dataset_path = self.data_root / dataset_name
+            if not dataset_path.exists():
+                print(f"⚠️  Warning: Dataset path not found: {dataset_path}")
+                continue
+
+            # Different datasets have different structures
+            if dataset_name == 'hipsc_3d':
+                # hipsc_3d has subdirectories for each protein
+                protein_dirs = [d for d in dataset_path.iterdir() if d.is_dir()]
+                for protein_dir in protein_dirs:
+                    # Find all .tif, .tiff, .nii, .nii.gz files
+                    files = list(protein_dir.glob('*.tif*'))
+                    files += list(protein_dir.glob('*.nii*'))
+                    self.image_files.extend(files)
+            else:
+                # Other datasets have data/ subdirectory
+                data_dir = dataset_path / 'data'
+                if data_dir.exists():
+                    files = list(data_dir.glob('*.tif*'))
+                    files += list(data_dir.glob('*.nii*'))
+                    files += list(data_dir.glob('*.png'))
+                    files += list(data_dir.glob('*.jpg'))
+                    self.image_files.extend(files)
+
+        # Sort for reproducibility
+        self.image_files = sorted(self.image_files)
+
+        # Split into train/val
+        n_total = len(self.image_files)
+        n_val = int(n_total * val_split)
+        n_train = n_total - n_val
+
+        if split == 'train':
+            self.image_files = self.image_files[:n_train]
+        else:
+            self.image_files = self.image_files[n_train:]
+
+        print(f"📁 Loaded {len(self.image_files)} images from {datasets} ({split} split)")
+
+    def __len__(self):
+        return len(self.image_files)
+
+    def __getitem__(self, idx):
+        """Load and preprocess image.
+
+        Returns:
+            Dictionary containing:
+                - 'image': Preprocessed image tensor of shape (C, D, H, W) or (C, H, W)
+                - 'idx': Sample index
+                - 'path': Path to the image file
+        """
+        img_path = self.image_files[idx]
+
+        try:
+            # Load image based on file extension
+            if img_path.suffix in ['.nii', '.gz']:
+                # NIfTI format
+                img = nib.load(str(img_path)).get_fdata()
+            else:
+                # TIFF/PNG/JPG format
+                img = io.imread(str(img_path))
+
+            # Convert to float32 and normalize to [0, 1]
+            img = img.astype(np.float32)
+            if img.max() > 0:
+                img = img / img.max()
+
+            # Handle dimensions
+            if img.ndim == 2:
+                # 2D image: add channel and depth dimensions
+                img = img[np.newaxis, np.newaxis, :, :]  # (1, 1, H, W)
+                # Replicate to create pseudo-3D with target depth
+                img = np.repeat(img, self.img_size[0], axis=1)  # (1, D, H, W)
+            elif img.ndim == 3:
+                # 3D image: add channel dimension
+                img = img[np.newaxis, :, :, :]  # (1, D, H, W)
+
+            # Resize to target size
+            img = torch.from_numpy(img).float()
+            img = torch.nn.functional.interpolate(
+                img.unsqueeze(0),  # Add batch dimension
+                size=self.img_size,
+                mode='trilinear',
+                align_corners=False
+            ).squeeze(0)  # Remove batch dimension
+
+            # Duplicate channel if needed (e.g., for 2-channel input)
+            if img.shape[0] < self.in_chans:
+                img = img.repeat(self.in_chans, 1, 1, 1)
+
+            return {
+                'image': img,
+                'idx': idx,
+                'path': str(img_path)
+            }
+
+        except Exception as e:
+            print(f"⚠️  Error loading {img_path}: {e}")
+            # Return a dummy tensor on error
+            return {
+                'image': torch.zeros(self.in_chans, *self.img_size),
+                'idx': idx,
+                'path': str(img_path)
+            }
 
 
 def create_model(config, model_type='vit', freeze_decoders=False):
@@ -919,16 +1064,22 @@ def main(args):
         )
 
     # Create datasets and dataloaders
-    # TODO: Replace with actual dataset
-    train_dataset = DummyDataset(
-        num_samples=100,
+    # Use real biomedical datasets
+    train_dataset = BiomedicalDataset(
+        data_root="/group/jug/aman/orochi/data",
+        datasets=['hipsc_3d', 'hipsc_2d', 'hipct_2d', 'idr_2d'],  # Load multiple datasets
         img_size=config.img_size,
-        in_chans=1,
+        in_chans=2,  # Model expects 2-channel input
+        split='train',
+        val_split=0.1
     )
-    val_dataset = DummyDataset(
-        num_samples=20,
+    val_dataset = BiomedicalDataset(
+        data_root="/group/jug/aman/orochi/data",
+        datasets=['hipsc_3d', 'hipsc_2d', 'hipct_2d', 'idr_2d'],
         img_size=config.img_size,
-        in_chans=1,
+        in_chans=2,
+        split='val',
+        val_split=0.1
     )
 
     train_loader = DataLoader(
