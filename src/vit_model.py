@@ -115,6 +115,9 @@ class ViTULight(nn.Module):
         else:
             tasks_to_run = [self.task.lower()]
 
+        # DEBUG: Print task info (remove after debugging)
+        print(f"DEBUG: self.task={self.task}, tasks_to_run={tasks_to_run}")
+
         # Registration task
         if 'reg' in tasks_to_run:
             reg_source, reg_flow = self.deform(raw)
