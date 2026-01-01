@@ -118,39 +118,47 @@ def download_dataset(dataset_name, data_root="./data", force=False):
         print(f"✗ Error downloading {description}: {e}")
         raise
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-def download_all_datasets(data_root="./data", force=False):
-    """Download all configured datasets.
+def download_all_datasets(data_root="./data", force=False, num_workers=4):
+    """Download all configured datasets in parallel.
 
     Args:
-        data_root: Root directory for data storage (default: ./data)
+        data_root: Root directory for data storage
         force: If True, re-download even if datasets exist
+        num_workers: Number of parallel downloads
     """
     print(f"Starting dataset downloads to {data_root}")
-    print(f"Total datasets: {len(DATASETS)}\n")
+    print(f"Total datasets: {len(DATASETS)}")
+    print(f"Parallel workers: {num_workers}\n")
 
-    # Create data root directory
     Path(data_root).mkdir(parents=True, exist_ok=True)
 
-    success_count = 0
+    results = {}
     failed_datasets = []
 
-    for dataset_name in DATASETS.keys():
-        try:
-            download_dataset(dataset_name, data_root, force)
-            success_count += 1
-        except Exception as e:
-            failed_datasets.append((dataset_name, str(e)))
-        print()  # Add blank line between datasets
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        future_to_dataset = {
+            executor.submit(download_dataset, name, data_root, force): name
+            for name in DATASETS.keys()
+        }
+
+        for future in as_completed(future_to_dataset):
+            dataset_name = future_to_dataset[future]
+            try:
+                future.result()
+                results[dataset_name] = "success"
+            except Exception as e:
+                results[dataset_name] = "failed"
+                failed_datasets.append((dataset_name, str(e)))
 
     # Summary
-    print("=" * 60)
-    print(f"Download Summary:")
-    print(f"  Successful: {success_count}/{len(DATASETS)}")
+    print("\n" + "=" * 60)
+    print("Download Summary:")
+    print(f"  Successful: {sum(v == 'success' for v in results.values())}/{len(DATASETS)}")
 
     if failed_datasets:
         print(f"  Failed: {len(failed_datasets)}")
-        print("\nFailed datasets:")
         for name, error in failed_datasets:
             print(f"  - {name}: {error}")
     else:
@@ -195,9 +203,17 @@ Examples:
     parser.add_argument(
         "--data-root",
         type=str,
-        default="./data",
+        default="/group/jug/aman/orochi/data/",
         help="Root directory for data storage (default: ./data)"
     )
+
+    parser.add_argument(
+    "--workers",
+    type=int,
+    default=4,
+    help="Number of parallel dataset downloads (default: 4)"
+    )
+
 
     parser.add_argument(
         "--force",
@@ -224,7 +240,7 @@ Examples:
     if args.dataset:
         download_dataset(args.dataset, args.data_root, args.force)
     else:
-        download_all_datasets(args.data_root, args.force)
+        download_all_datasets(args.data_root, args.force, args.workers)
 
 
 if __name__ == "__main__":

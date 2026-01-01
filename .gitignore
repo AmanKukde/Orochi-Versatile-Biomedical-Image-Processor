@@ -7,6 +7,8 @@
 *log
 *.json
 *yaml
-wandb/*
+*/wandb/*
 pretrained_checkpoints/
 data/
+*.wandb
+*.png
