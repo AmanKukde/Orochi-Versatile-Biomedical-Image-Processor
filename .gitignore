@@ -2,7 +2,6 @@
 
 **/checkpoints/
 
-# **/notebooks
 *.txt
 *log
 *.json
