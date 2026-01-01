@@ -355,6 +355,9 @@ def create_scheduler(optimizer, config):
 def compute_total_loss(aux_loss: Dict) -> torch.Tensor:
     """Compute total loss from auxiliary losses.
 
+    Handles both single-task and multi-task training by only summing
+    losses that are present in aux_loss.
+
     Args:
         aux_loss: Dictionary of task-specific losses
 
@@ -363,16 +366,16 @@ def compute_total_loss(aux_loss: Dict) -> torch.Tensor:
     """
     total_loss = 0.0
 
-    # MSE losses for all tasks
+    # MSE losses for all tasks (only sum existing tasks)
     for task, loss_val in aux_loss['mse'].items():
         total_loss += loss_val
 
-    # NCC loss for registration
-    if 'ncc' in aux_loss:
+    # NCC loss for registration (if present)
+    if 'ncc' in aux_loss and 'reg' in aux_loss['ncc']:
         total_loss += aux_loss['ncc']['reg']
 
-    # Gradient regularization for registration
-    if 'grad' in aux_loss:
+    # Gradient regularization for registration (if present)
+    if 'grad' in aux_loss and 'reg' in aux_loss['grad']:
         total_loss += 0.01 * aux_loss['grad']['reg']  # Weight for smoothness
 
     return total_loss
@@ -439,36 +442,52 @@ def train_epoch(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
             optimizer.step()
 
-        # Update meters
+        # Update meters (only for tasks that exist)
         loss_meter.update(loss.item())
-        reg_loss_meter.update(aux_loss['mse']['reg'].item())
-        fus_loss_meter.update(aux_loss['mse']['fus'].item())
-        sr_loss_meter.update(aux_loss['mse']['SR'].item())
-        ir_loss_meter.update(aux_loss['mse']['IR'].item())
+        if 'reg' in aux_loss['mse']:
+            reg_loss_meter.update(aux_loss['mse']['reg'].item())
+        if 'fus' in aux_loss['mse']:
+            fus_loss_meter.update(aux_loss['mse']['fus'].item())
+        if 'SR' in aux_loss['mse']:
+            sr_loss_meter.update(aux_loss['mse']['SR'].item())
+        if 'IR' in aux_loss['mse']:
+            ir_loss_meter.update(aux_loss['mse']['IR'].item())
 
-        # Update progress bar
-        pbar.set_postfix({
-            'loss': f"{loss_meter.avg:.4f}",
-            'reg': f"{reg_loss_meter.avg:.4f}",
-            'fus': f"{fus_loss_meter.avg:.4f}",
-            'sr': f"{sr_loss_meter.avg:.4f}",
-            'ir': f"{ir_loss_meter.avg:.4f}",
-        })
+        # Update progress bar (only show active tasks)
+        postfix = {'loss': f"{loss_meter.avg:.4f}"}
+        if 'reg' in aux_loss['mse']:
+            postfix['reg'] = f"{reg_loss_meter.avg:.4f}"
+        if 'fus' in aux_loss['mse']:
+            postfix['fus'] = f"{fus_loss_meter.avg:.4f}"
+        if 'SR' in aux_loss['mse']:
+            postfix['sr'] = f"{sr_loss_meter.avg:.4f}"
+        if 'IR' in aux_loss['mse']:
+            postfix['ir'] = f"{ir_loss_meter.avg:.4f}"
+        pbar.set_postfix(postfix)
 
-        # Log to wandb
+        # Log to wandb (only active tasks)
         if WANDB_AVAILABLE and config.wandb_project is not None:
             if batch_idx % config.log_interval == 0:
-                wandb.log({
+                log_dict = {
                     'train/loss': loss.item(),
-                    'train/reg_loss': aux_loss['mse']['reg'].item(),
-                    'train/fus_loss': aux_loss['mse']['fus'].item(),
-                    'train/sr_loss': aux_loss['mse']['SR'].item(),
-                    'train/ir_loss': aux_loss['mse']['IR'].item(),
-                    'train/ncc_loss': aux_loss['ncc']['reg'].item(),
-                    'train/grad_loss': aux_loss['grad']['reg'].item(),
                     'epoch': epoch,
                     'batch': batch_idx,
-                })
+                }
+                # Add task-specific losses
+                if 'reg' in aux_loss['mse']:
+                    log_dict['train/reg_loss'] = aux_loss['mse']['reg'].item()
+                    if 'reg' in aux_loss.get('ncc', {}):
+                        log_dict['train/ncc_loss'] = aux_loss['ncc']['reg'].item()
+                    if 'reg' in aux_loss.get('grad', {}):
+                        log_dict['train/grad_loss'] = aux_loss['grad']['reg'].item()
+                if 'fus' in aux_loss['mse']:
+                    log_dict['train/fus_loss'] = aux_loss['mse']['fus'].item()
+                if 'SR' in aux_loss['mse']:
+                    log_dict['train/sr_loss'] = aux_loss['mse']['SR'].item()
+                if 'IR' in aux_loss['mse']:
+                    log_dict['train/ir_loss'] = aux_loss['mse']['IR'].item()
+
+                wandb.log(log_dict)
 
     return {
         'loss': loss_meter.avg,
@@ -555,6 +574,52 @@ def validate(
         'sr_loss': sr_loss_meter.avg,
         'ir_loss': ir_loss_meter.avg,
     }
+
+
+def generate_checkpoint_name(config, epoch: int = None, checkpoint_type: str = 'periodic') -> str:
+    """Generate descriptive checkpoint filename.
+
+    Format: {model}_{task}_{encoder_state}_{checkpoint_type}_{epoch}.pth
+
+    Args:
+        config: Configuration object
+        epoch: Current epoch (optional)
+        checkpoint_type: Type of checkpoint ('best', 'periodic', 'final')
+
+    Returns:
+        Descriptive checkpoint filename
+
+    Examples:
+        vit_ir-task_frozen-decoders_best_epoch-042_loss-0.0123.pth
+        vit_multitask_frozen-decoders_periodic_epoch-010.pth
+        mamba_reg-task_full-finetune_final.pth
+    """
+    # Model type
+    model_name = 'vit' if 'ViT' in str(type(config).__name__) else 'mamba'
+
+    # Task
+    task = getattr(config, 'task', 'multitask')
+    task_str = task.replace('_', '-')
+
+    # Training mode
+    freeze_decoders = getattr(config, 'freeze_decoders', False)
+    freeze_encoder = getattr(config, 'freeze_encoder', False)
+    if freeze_decoders:
+        mode = 'frozen-decoders'  # Training encoder only
+    elif freeze_encoder:
+        mode = 'frozen-encoder'  # Training decoders only
+    else:
+        mode = 'full-finetune'  # Training all
+
+    # Build filename parts
+    parts = [model_name, task_str, mode, checkpoint_type]
+
+    # Add epoch if provided
+    if epoch is not None:
+        parts.append(f"epoch-{epoch:03d}")
+
+    filename = '_'.join(parts) + '.pth'
+    return filename
 
 
 def save_checkpoint(
@@ -1084,16 +1149,18 @@ def main(args):
             # Save best checkpoint
             if val_metrics['loss'] < best_loss:
                 best_loss = val_metrics['loss']
+                filename = generate_checkpoint_name(config, epoch, 'best')
                 save_checkpoint(
                     model, optimizer, scheduler, epoch, best_loss, config,
-                    f"{config.experiment_name}_best.pth"
+                    filename
                 )
 
         # Save periodic checkpoint
         if epoch % config.save_interval == 0:
+            filename = generate_checkpoint_name(config, epoch, 'periodic')
             save_checkpoint(
                 model, optimizer, scheduler, epoch, best_loss, config,
-                f"{config.experiment_name}_epoch_{epoch}.pth"
+                filename
             )
 
         # Step scheduler
@@ -1111,9 +1178,10 @@ def main(args):
             })
 
     # Save final checkpoint
+    filename = generate_checkpoint_name(config, config.num_epochs, 'final')
     save_checkpoint(
         model, optimizer, scheduler, config.num_epochs, best_loss, config,
-        f"{config.experiment_name}_final.pth"
+        filename
     )
 
     # Finish wandb
