@@ -63,7 +63,7 @@ if_convskip: true
 if_transskip: true
 pat_merg_rf: 2
 decoder_head_chan: 16  # Match 3D Mamba checkpoint (mamba_fm_3d.pth.tar)
-grid_size: [64, 128, 128]
+grid_size: [64, 256, 256]
 window_size: [7, 7, 7]
 use_checkpoint: false
 
