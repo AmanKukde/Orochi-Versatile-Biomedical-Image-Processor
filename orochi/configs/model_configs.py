@@ -365,7 +365,7 @@ class ViT3DConfig(BaseConfig):
     """
 
     # Model architecture
-    img_size: List[int] = field(default_factory=lambda: [64, 128, 128])
+    img_size: List[int] = field(default_factory=lambda: [64, 256, 256])
     patch_size: int = 4
     in_chans: int = 2  # Two input images
     out_chans: int = 3

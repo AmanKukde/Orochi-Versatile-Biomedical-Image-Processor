@@ -2,7 +2,7 @@
 # Example configuration for training ViT encoder with frozen Mamba decoders
 
 # Paths
-data_root: ./data
+data_root: /group/jug/aman/orochi/data/
 checkpoint_dir: ./checkpoints/vit
 log_dir: ./logs/vit
 output_dir: ./outputs/vit
@@ -39,8 +39,9 @@ seed: 42
 deterministic: false
 
 # Model architecture
-img_size: [64, 128, 128]
-patch_size: 16  # Reduced from 4 to avoid OOM - fewer patches = less memory
+img_size: [64, 256, 256]
+patch_size: 16 # Reduced from 4 to avoid OOM - fewer patches = less memory
+patch_size: 4  #Original Patch size of iJepa
 in_chans: 2
 out_chans: 3
 embed_dim: 128  # Match pretrained Mamba checkpoint
