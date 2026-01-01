@@ -39,7 +39,7 @@ seed: 42
 deterministic: false
 
 # Model architecture
-img_size: [64, 128, 128]
+img_size: [64, 256, 256]
 patch_size: 16  # Reduced from 4 to avoid OOM - fewer patches = less memory
 in_chans: 2
 out_chans: 3
@@ -62,7 +62,7 @@ if_convskip: true
 if_transskip: true
 pat_merg_rf: 2
 decoder_head_chan: 16  # Match 3D Mamba checkpoint (mamba_fm_3d.pth.tar)
-grid_size: [64, 128, 128]
+grid_size: [64, 256, 256]
 window_size: [7, 7, 7]
 use_checkpoint: false
 
