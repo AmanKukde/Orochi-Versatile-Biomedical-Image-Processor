@@ -974,7 +974,7 @@ def main(args):
     scheduler = create_scheduler(optimizer, config)
 
     # Mixed precision training
-    scaler = GradScaler() if args.amp else None
+    scaler = torch.amp.GradScaler() if args.amp else None
 
     # Load pretrained ViT encoder from HuggingFace (only for ViT model)
     if args.model.lower() == 'vit' and args.pretrained_vit is not None:
