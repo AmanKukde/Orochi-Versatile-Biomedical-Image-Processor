@@ -11,3 +11,4 @@ pretrained_checkpoints/
 data/
 *.wandb
 *.png
+*wandb/latest-run*
