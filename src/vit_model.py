@@ -62,6 +62,7 @@ class ViTULight(nn.Module):
         self.if_transskip = config.if_transskip
         self.embed_dim = config.embed_dim
         self.img_size = config.img_size
+        self.task = getattr(config, 'task', 'multi_task')  # 'ir', 'reg', 'fus', 'sr', or 'multi_task'
 
         # Vision Transformer encoder
         self.encoder = ViTEncoderHiera(config)
@@ -91,9 +92,10 @@ class ViTULight(nn.Module):
         self.ssim = losses.SSIM3D()
 
     def forward(self, raw):
-        """Forward pass through all tasks.
+        """Forward pass through selected task(s).
 
         Applies synthetic degradations and restores them using task-specific decoders.
+        Supports single-task or multi-task training based on self.task.
 
         Args:
             raw: Input image of shape (B, C, D, H, W)
@@ -103,65 +105,72 @@ class ViTULight(nn.Module):
                 - logits: Dictionary containing degraded and restored images for each task
                 - aux_loss: Dictionary containing loss values for each task
         """
-        # Registration: deformation degradation
-        reg_source, reg_flow = self.deform(raw)
-        x = torch.cat([reg_source, raw], dim=1)
-        out_feats = self.encoder(x)
-        reg_inv_flow = self.reg_decoder(out_feats)
-        reged = self.spatial_trans(reg_source, reg_inv_flow)
+        logits = {"raw": raw.detach().cpu().numpy()}
+        aux_loss = {"mse": {}, "ncc": {}, "grad": {}}
 
-        # Fusion: mask degradation
-        fus_source_A = self.mask(raw)
-        fus_source_B = self.mask(raw)
-        x = torch.cat([fus_source_A, fus_source_B], dim=1)
-        out_feats = self.encoder(x)
-        fused = self.fus_decoder(out_feats)
+        # Determine which tasks to run
+        tasks_to_run = []
+        if self.task == 'multi_task':
+            tasks_to_run = ['reg', 'fus', 'sr', 'ir']
+        else:
+            tasks_to_run = [self.task.lower()]
 
-        # Super-resolution: downsampling degradation
-        SR_source = self.downsample(raw)
-        x = torch.cat([SR_source, SR_source], dim=1)
-        out_feats = self.encoder(x)
-        SRed = self.SR_decoder(out_feats)
+        # Registration task
+        if 'reg' in tasks_to_run:
+            reg_source, reg_flow = self.deform(raw)
+            x = torch.cat([reg_source, raw], dim=1)
+            out_feats = self.encoder(x)
+            reg_inv_flow = self.reg_decoder(out_feats)
+            reged = self.spatial_trans(reg_source, reg_inv_flow)
 
-        # Isotropic restoration: noise degradation
-        IR_source = self.noise(raw)
-        x = torch.cat([IR_source, IR_source], dim=1)
-        out_feats = self.encoder(x)
-        IRed = self.IR_decoder(out_feats)
-
-        # Output results
-        logits = {
-            "raw": raw.detach().cpu().numpy(),
-            "reg": {
+            logits["reg"] = {
                 "deformed": reg_source.detach().cpu().numpy(),
                 "registered": reged.detach().cpu().numpy(),
-            },
-            "fus": {
+            }
+            aux_loss["mse"]["reg"] = self.mse(reged, raw)
+            aux_loss["ncc"]["reg"] = self.ncc(reged, raw)
+            aux_loss["grad"]["reg"] = self.grad(reg_inv_flow, raw)
+
+        # Fusion task
+        if 'fus' in tasks_to_run:
+            fus_source_A = self.mask(raw)
+            fus_source_B = self.mask(raw)
+            x = torch.cat([fus_source_A, fus_source_B], dim=1)
+            out_feats = self.encoder(x)
+            fused = self.fus_decoder(out_feats)
+
+            logits["fus"] = {
                 "masked_A": fus_source_A.detach().cpu().numpy(),
                 "masked_B": fus_source_B.detach().cpu().numpy(),
                 "fused": fused.detach().cpu().numpy(),
-            },
-            "SR": {
+            }
+            aux_loss["mse"]["fus"] = self.mse(fused, raw)
+
+        # Super-resolution task
+        if 'sr' in tasks_to_run:
+            SR_source = self.downsample(raw)
+            x = torch.cat([SR_source, SR_source], dim=1)
+            out_feats = self.encoder(x)
+            SRed = self.SR_decoder(out_feats)
+
+            logits["SR"] = {
                 "downsampled": SR_source.detach().cpu().numpy(),
                 "super_resolution": SRed.detach().cpu().numpy(),
-            },
-            "IR": {
+            }
+            aux_loss["mse"]["SR"] = self.mse(SRed, raw)
+
+        # Isotropic restoration task
+        if 'ir' in tasks_to_run:
+            IR_source = self.noise(raw)
+            x = torch.cat([IR_source, IR_source], dim=1)
+            out_feats = self.encoder(x)
+            IRed = self.IR_decoder(out_feats)
+
+            logits["IR"] = {
                 "noisy": IR_source.detach().cpu().numpy(),
                 "restored": IRed.detach().cpu().numpy(),
-            },
-        }
-
-        # Compute losses
-        aux_loss = {
-            "mse": {
-                "reg": self.mse(reged, raw),
-                "fus": self.mse(fused, raw),
-                "SR": self.mse(SRed, raw),
-                "IR": self.mse(IRed, raw),
-            },
-            "ncc": {"reg": self.ncc(reged, raw)},
-            "grad": {"reg": self.grad(reg_inv_flow, raw)},
-        }
+            }
+            aux_loss["mse"]["IR"] = self.mse(IRed, raw)
 
         return logits, aux_loss
 

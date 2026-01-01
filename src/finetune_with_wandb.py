@@ -240,6 +240,8 @@ def create_model(config, model_type='vit', freeze_decoders=False):
     """
     if model_type.lower() == 'vit':
         print(f"Creating Vision Transformer model with {sum(config.depths)} blocks")
+        task = getattr(config, 'task', 'multi_task')
+        print(f"Training task: {task.upper()}")
         model = ViTULight(config)
     elif model_type.lower() == 'mamba':
         if not MAMBA_AVAILABLE:
@@ -248,6 +250,8 @@ def create_model(config, model_type='vit', freeze_decoders=False):
                 "Please install mamba_ssm or use --model vit instead."
             )
         print(f"Creating Mamba model with {sum(config.depths)} blocks")
+        task = getattr(config, 'task', 'multi_task')
+        print(f"Training task: {task.upper()}")
         model = MambaULight(config)
     else:
         raise ValueError(f"Unknown model type: {model_type}. Choose 'vit' or 'mamba'")
