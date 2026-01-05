@@ -611,7 +611,14 @@ class NCC_vxm(torch.nn.Module):
         I_var = I2_sum - 2 * u_I * I_sum + u_I * u_I * win_size
         J_var = J2_sum - 2 * u_J * J_sum + u_J * u_J * win_size
 
+        # Clamp variances to prevent division by zero/very small numbers
+        I_var = torch.clamp(I_var, min=1e-5)
+        J_var = torch.clamp(J_var, min=1e-5)
+
         cc = cross * cross / (I_var * J_var + 1e-5)
+
+        # Clamp cc to prevent inf/-inf values
+        cc = torch.clamp(cc, min=-1e6, max=1e6)
 
         return -torch.mean(cc)
 
