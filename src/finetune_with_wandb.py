@@ -386,8 +386,14 @@ def train_epoch(
     config,
     scaler: Optional[GradScaler] = None,
     is_master: bool = True,
+    gradient_accumulation_steps: int = 1,
 ) -> Dict[str, float]:
-    """Train for one epoch."""
+    """Train for one epoch with gradient accumulation support.
+
+    Args:
+        gradient_accumulation_steps: Number of steps to accumulate gradients before updating.
+                                     Effective batch size = batch_size × accumulation_steps × num_gpus
+    """
     model.train()
 
     loss_meter = utils.AverageMeter()
@@ -408,27 +414,38 @@ def train_epoch(
             with autocast(device_type='cuda', dtype=torch.float16):
                 logits, aux_loss = model(images)
                 loss = compute_total_loss(aux_loss)
+                # Scale loss for gradient accumulation
+                loss = loss / gradient_accumulation_steps
         else:
             logits, aux_loss = model(images)
             loss = compute_total_loss(aux_loss)
+            # Scale loss for gradient accumulation
+            loss = loss / gradient_accumulation_steps
 
-        # Backward pass
-        optimizer.zero_grad(set_to_none=True)
+        # Backward pass (accumulate gradients)
         if scaler is not None:
             scaler.scale(loss).backward()
-            if config.grad_clip is not None:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
         else:
             loss.backward()
-            if config.grad_clip is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
-            optimizer.step()
 
-        # Update meters (local averages)
-        loss_meter.update(loss.item())
+        # Update weights every N steps
+        if (batch_idx + 1) % gradient_accumulation_steps == 0:
+            if scaler is not None:
+                if config.grad_clip is not None:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                if config.grad_clip is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+                optimizer.step()
+
+            # Zero gradients after optimizer step
+            optimizer.zero_grad(set_to_none=True)
+
+        # Update meters (use unscaled loss for logging)
+        loss_meter.update(loss.item() * gradient_accumulation_steps)
         if "reg" in aux_loss["mse"]:
             reg_loss_meter.update(aux_loss["mse"]["reg"].item())
         if "fus" in aux_loss["mse"]:
@@ -1081,7 +1098,10 @@ def main(args):
         if args.distributed and train_sampler: train_sampler.set_epoch(epoch)
         
         # Train
-        train_metrics = train_epoch(model, train_loader, optimizer, device, epoch, config, scaler, is_master)
+        train_metrics = train_epoch(
+            model, train_loader, optimizer, device, epoch, config, scaler, is_master,
+            gradient_accumulation_steps=args.gradient_accumulation_steps
+        )
         
         # Validate + Checkpoint
         if epoch % config.val_interval == 0:
@@ -1158,6 +1178,12 @@ if __name__ == "__main__":
         "--amp",
         action="store_true",
         help="Use automatic mixed precision",
+    )
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=1,
+        help="Number of gradient accumulation steps (effective batch size = batch_size × accumulation_steps × num_gpus)",
     )
 
     # Logging arguments
