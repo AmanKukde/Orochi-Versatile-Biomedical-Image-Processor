@@ -126,7 +126,7 @@ class ViTULight(nn.Module):
             tasks_to_run = [task_key]
 
         # DEBUG: Print task info (remove after debugging)
-        print(f"DEBUG: self.task={self.task}, task_key={task_key}, tasks_to_run={tasks_to_run}")
+        # print(f"DEBUG: self.task={self.task}, task_key={task_key}, tasks_to_run={tasks_to_run}")
 
         # Registration task
         if 'reg' in tasks_to_run:

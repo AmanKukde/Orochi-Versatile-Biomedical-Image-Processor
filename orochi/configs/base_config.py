@@ -108,6 +108,7 @@ class BaseConfig:
     # Reproducibility
     seed: int = 42
     deterministic: bool = False
+    subset: Optional[float] = None
 
     def __post_init__(self):
         """Convert string paths to Path objects."""

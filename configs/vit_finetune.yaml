@@ -1,19 +1,22 @@
 # Vision Transformer Training Configuration
+
 # Example configuration for training ViT encoder with frozen Mamba decoders
 
 # Paths
 data_root: /group/jug/aman/orochi/data/
+
 checkpoint_dir: ./checkpoints/vit
 log_dir: ./logs/vit
 output_dir: ./outputs/vit
 
 # Device
-device: cuda
-gpu_ids: [0]
+device: cuda            # actual device is chosen via local_rank in DDP
+gpu_ids: [0]            # kept for backward-compat; ignored when --distributed is used
+
 num_workers: 4
 
 # Training
-batch_size: 1
+batch_size: 3
 num_epochs: 100
 learning_rate: 0.0001
 weight_decay: 0.00001
@@ -29,7 +32,7 @@ min_lr: 0.0000001
 
 # Logging
 log_interval: 10
-save_interval: 5
+save_interval: 100
 val_interval: 1
 wandb_project: orochi-vit
 experiment_name: vit_encoder_finetune
@@ -39,15 +42,16 @@ seed: 42
 deterministic: false
 
 # Model architecture
-img_size: [32, 224, 224]  # Match pretrained checkpoint dimensions
+img_size: [32, 224, 224]   # Match pretrained checkpoint dimensions
 grid_size: [32, 224, 224]  # Match pretrained checkpoint for SpatialTransformer
-# patch_size: 4  #Original Patch size of pretrained checkpoint
-patch_size: 16 # Reduced from 4 to avoid OOM - fewer patches = less memory
+
+# patch_size: 4  # Original Patch size of pretrained checkpoint
+patch_size: 16    # Reduced from 4 to avoid OOM - fewer patches = less memory
 
 in_chans: 2
 out_chans: 3
-embed_dim: 128  # Match pretrained Mamba checkpoint
-depths: [2, 2, 4, 2]  # ViT encoder depths (differs from Mamba's [4,4,4,4])
+embed_dim: 128               # Match pretrained Mamba checkpoint
+depths: [2, 2, 4, 2]         # ViT encoder depths (differs from Mamba's [4,4,4,4])
 num_heads: 4
 
 # ViT-specific parameters
@@ -61,12 +65,11 @@ patch_norm: true
 drop_rate: 0.5
 drop_path_rate: 0.1
 out_indices: [0, 1, 2, 3]
-if_convskip: true
+if_convskip: true 
 if_transskip: true
 pat_merg_rf: 2
-decoder_head_chan: 16  # Match 3D Mamba checkpoint (mamba_fm_3d.pth.tar)
-
-window_size: [5, 6, 7]  # Match pretrained checkpoint
+decoder_head_chan: 16          # Match 3D Mamba checkpoint (mamba_fm_3d.pth.tar)
+window_size: [5, 6, 7]        # Match pretrained checkpoint
 use_checkpoint: false
 
 # SSM parameters (kept for compatibility, unused in ViT)
@@ -79,9 +82,11 @@ initializer_cfg: null
 
 # Task-specific
 # Options: 'isotropic_restoration', 'registration', 'fusion', 'super_resolution', 'multi_task'
-task: isotropic_restoration  # Single task for faster training (4x speedup)
+task: multi_task  # Single task for faster training (4x speedup)
 
 # Pretrained - set this to path of trained Mamba checkpoint
 pretrained_path: "/home/aman.kukde/MambaSplit/Orochi-Versatile-Biomedical-Image-Processor/pretrained_checkpoints/mamba_fm_3d.pth.tar"
+
 freeze_encoder: false
 freeze_decoders: true  # IMPORTANT: Freeze decoders when training ViT encoder
+subset: 0
