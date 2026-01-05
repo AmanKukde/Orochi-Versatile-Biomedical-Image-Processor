@@ -327,20 +327,52 @@ def create_scheduler(optimizer, config):
 
 
 def compute_total_loss(aux_loss: Dict) -> torch.Tensor:
-    """Compute total loss from auxiliary losses."""
-    total_loss = 0.0
+    """Compute total loss from auxiliary losses with NaN/Inf detection.
 
-    # MSE losses for all tasks (only sum existing tasks)
-    for _, loss_val in aux_loss["mse"].items():
+    Handles both single-task and multi-task modes by summing only present losses.
+    Detects and handles NaN/Inf values to prevent training collapse.
+
+    Args:
+        aux_loss: Dictionary with structure {"mse": {...}, "ncc": {...}, "grad": {...}}
+
+    Returns:
+        Total loss tensor
+    """
+    total_loss = 0.0
+    has_nan_or_inf = False
+
+    # MSE losses for all tasks (with NaN/Inf checking)
+    for task_name, loss_val in aux_loss["mse"].items():
+        if torch.isnan(loss_val) or torch.isinf(loss_val):
+            print(f"WARNING: {task_name} MSE loss is {loss_val.item()} - skipping")
+            has_nan_or_inf = True
+            continue
         total_loss += loss_val
 
     # NCC loss for registration (if present)
     if "ncc" in aux_loss and "reg" in aux_loss["ncc"]:
-        total_loss += aux_loss["ncc"]["reg"]
+        ncc_loss = aux_loss["ncc"]["reg"]
+        if torch.isnan(ncc_loss) or torch.isinf(ncc_loss):
+            print(f"WARNING: NCC loss is {ncc_loss.item()} - skipping")
+            has_nan_or_inf = True
+        else:
+            total_loss += ncc_loss
 
     # Gradient regularization for registration (if present)
     if "grad" in aux_loss and "reg" in aux_loss["grad"]:
-        total_loss += 0.01 * aux_loss["grad"]["reg"]  # smoothness weight
+        grad_loss = aux_loss["grad"]["reg"]
+        if torch.isnan(grad_loss) or torch.isinf(grad_loss):
+            print(f"WARNING: Gradient loss is {grad_loss.item()} - skipping")
+            has_nan_or_inf = True
+        else:
+            total_loss += 0.01 * grad_loss  # smoothness weight
+
+    # Final check
+    if torch.isnan(total_loss) or torch.isinf(total_loss):
+        print(f"ERROR: Total loss is {total_loss.item()}")
+        if has_nan_or_inf:
+            print("Returning zero loss to continue training")
+            return torch.tensor(0.0, device=total_loss.device, requires_grad=True)
 
     return total_loss
 
