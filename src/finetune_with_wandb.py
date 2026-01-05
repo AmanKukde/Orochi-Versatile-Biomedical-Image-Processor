@@ -40,7 +40,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.amp import GradScaler
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn import functional as F
@@ -405,7 +405,7 @@ def train_epoch(
 
         # Forward pass
         if scaler is not None:
-            with torch.autocast(device_type=device.type, dtype=torch.float16):
+            with autocast(device_type='cuda', dtype=torch.float16):
                 logits, aux_loss = model(images)
                 loss = compute_total_loss(aux_loss)
         else:
@@ -1039,7 +1039,7 @@ def main(args):
     # === 6. OPTIMIZER ===
     optimizer = create_optimizer(model_for_optim, config)
     scheduler = create_scheduler(optimizer, config)
-    scaler = GradScaler(enabled=args.amp)
+    scaler = GradScaler(device='cuda', enabled=args.amp)
 
     # === 7. PRETRAINED ===
     if args.model.lower() == "vit" and args.pretrained_vit:
