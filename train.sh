@@ -8,10 +8,10 @@
 #SBATCH --ntasks-per-node=4
 
 #SBATCH --partition=dgx
-#SBATCH --gres=gpu:18gb:4
+#SBATCH --gres=gpu:35gb:4
 
 #SBATCH --mem=32GB
-#SBATCH --cpus-per-task=12
+#SBATCH --cpus-per-task=4
 #SBATCH --job-name=vit-finetune-ddp
 #SBATCH --time=36:00:00
 
@@ -49,10 +49,13 @@ torchrun \
     --distributed \
     --wandb_project orochi-vit \
     --experiment_name "${EXP_NAME}" \
-    --batch_size 3 \
+    --batch_size 6 \
+    --gradient_accumulation_steps 4 \
     --num_epochs 100 \
     --freeze_decoders \
-    --pretrained_decoders "/home/aman.kukde/MambaSplit/Orochi-Versatile-Biomedical-Image-Processor/pretrained_checkpoints/mamba_fm_3d.pth.tar"
+    --amp \
+    --pretrained_decoders "/home/aman.kukde/MambaSplit/Orochi-Versatile-Biomedical-Image-Processor/pretrained_checkpoints/mamba_fm_3d.pth.tar" \
+
 
 echo "Training complete! Checkpoints in ${CHECKPOINTDIR}"
 echo "Logs in ${LOGDIR}"
