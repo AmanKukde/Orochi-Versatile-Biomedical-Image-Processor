@@ -615,12 +615,18 @@ class NCC_vxm(torch.nn.Module):
         I_var = torch.clamp(I_var, min=1e-5)
         J_var = torch.clamp(J_var, min=1e-5)
 
-        cc = cross * cross / (I_var * J_var + 1e-5)
+        # Compute normalized cross-correlation (NCC) in range [-1, 1]
+        # where 1 = perfect positive correlation, -1 = perfect negative correlation
+        cc = cross / torch.sqrt(I_var * J_var + 1e-8)
 
-        # Clamp cc to prevent inf/-inf values
-        cc = torch.clamp(cc, min=-1e6, max=1e6)
+        # Clamp cc to valid correlation range to prevent numerical issues
+        cc = torch.clamp(cc, min=-1.0, max=1.0)
 
-        return -torch.mean(cc)
+        # Return 1 - cc so that:
+        # - Perfect correlation (cc=1) gives loss=0
+        # - No correlation (cc=0) gives loss=1
+        # - Perfect anti-correlation (cc=-1) gives loss=2
+        return torch.mean(1.0 - cc)
 
 
 class MIND_loss(torch.nn.Module):
