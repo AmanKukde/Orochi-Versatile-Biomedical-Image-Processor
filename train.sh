@@ -25,6 +25,7 @@ conda activate /home/aman.kukde/conda/envs/mamba_biomed
 export EXP_NAME="vit_finetune_$(date +%Y%m%d_%H%M%S)"
 export LOGDIR="/group/jug/aman/MambaSplit_Runs/vit_finetune/logs/${EXP_NAME}"
 export CHECKPOINTDIR="/group/jug/aman/MambaSplit_Runs/vit_finetune/checkpoints/${EXP_NAME}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Create output directories
 mkdir -p "${LOGDIR}"
@@ -49,8 +50,8 @@ torchrun \
     --distributed \
     --wandb_project orochi-vit \
     --experiment_name "${EXP_NAME}" \
-    --batch_size 6 \
-    --gradient_accumulation_steps 4 \
+    --batch_size 3 \
+    --gradient_accumulation_steps 8 \
     --num_epochs 100 \
     --freeze_decoders \
     --amp \

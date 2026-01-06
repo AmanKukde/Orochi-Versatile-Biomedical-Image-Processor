@@ -93,29 +93,6 @@ def set_seed(seed: int):
     # torch.backends.cudnn.benchmark = False
 
 
-class DummyDataset(Dataset):
-    """Dummy dataset for testing and demonstration.
-
-    Args:
-        num_samples: Number of samples in dataset
-        img_size: Image size [D, H, W]
-        in_chans: Number of input channels
-    """
-
-    def __init__(self, num_samples=100, img_size=(64, 128, 128), in_chans=1):
-        self.num_samples = num_samples
-        self.img_size = img_size
-        self.in_chans = in_chans
-
-    def __len__(self):
-        return self.num_samples
-
-    def __getitem__(self, idx):
-        """Return a random sample."""
-        image = torch.rand(self.in_chans, *self.img_size)
-        return {"image": image, "idx": idx}
-
-
 class BiomedicalDataset(Dataset):
     """Simplified biomedical dataset matching original preprocessing.
 
@@ -1182,9 +1159,9 @@ def main(args):
             best_loss = ckpt.get('val_loss', float('inf'))
 
     # === 9. DATA ===
-    train_ds = BiomedicalDataset("/group/jug/aman/orochi/data", ["hipsc_3d", "hipsc_2d"], 
+    train_ds = BiomedicalDataset("/group/jug/aman/orochi/data", ["hipsc_3d", "hipsc_2d", "hipct_2d" , "idr_2d", "idr_raw"], 
                                 config.img_size, "train", subset_frac=args.subset)
-    val_ds = BiomedicalDataset("/group/jug/aman/orochi/data", ["hipsc_3d", "hipsc_2d"], 
+    val_ds = BiomedicalDataset("/group/jug/aman/orochi/data", ["hipsc_3d", "hipsc_2d", "hipct_2d" , "idr_2d", "idr_raw"], 
                               config.img_size, "val", subset_frac=args.subset)
 
     train_sampler = DistributedSampler(train_ds, args.world_size, args.rank) if args.distributed else None
