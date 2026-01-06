@@ -408,12 +408,16 @@ class ViT3DConfig(BaseConfig):
     pretrained_encoder_path: Optional[Path] = None
     freeze_encoder: bool = False
 
+    # HuggingFace/TIMM specific
+    hf_model_name: Optional[str] = None  # e.g., 'google/vit-base-patch16-224', 'microsoft/swin-tiny-patch4-window7-224'
+    use_timm: bool = False  # Use TIMM instead of HuggingFace for encoder_type='huggingface'
+
     # Decoder configuration
     freeze_decoders: bool = False
 
     # Bottleneck configuration (for dimension mismatch)
     use_bottleneck: bool = False
-    encoder_dim: int = 96  # Set to 384 for 3DINO-ViT
+    encoder_dim: int = 96  # Set to 384 for 3DINO-ViT, 768 for HF ViT-Base
     bottleneck_hidden_ratio: float = 2.0
     bottleneck_dropout: float = 0.1
     bottleneck_activation: str = 'gelu'
