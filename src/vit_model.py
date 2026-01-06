@@ -24,7 +24,7 @@ import torch.nn.functional as F
 
 # Local imports
 import losses
-from src.vit_encoder import ViTEncoderHiera
+from src.encoder_factory import create_encoder, print_encoder_info
 from src.ours_mamba import (
     reg_decoder,
     fus_decoder,
@@ -32,6 +32,7 @@ from src.ours_mamba import (
     IR_decoder,
     SpatialTransformer,
 )
+from src.bottleneck import BottleneckFFN, HierarchicalBottleneck
 
 
 class ViTULight(nn.Module):
@@ -64,8 +65,20 @@ class ViTULight(nn.Module):
         self.img_size = config.img_size
         self.task = getattr(config, 'task', 'multi_task')  # 'ir', 'reg', 'fus', 'sr', or 'multi_task'
 
-        # Vision Transformer encoder
-        self.encoder = ViTEncoderHiera(config)
+        # Encoder configuration
+        encoder_type = getattr(config, 'encoder_type', 'vit')  # 'mamba', 'vit', '3dino', 'huggingface'
+        pretrained_path = getattr(config, 'pretrained_encoder_path', None)
+        freeze_encoder = getattr(config, 'freeze_encoder', False)
+
+        # Create encoder using factory
+        print(f"\n🔧 Creating {encoder_type.upper()} encoder...")
+        self.encoder = create_encoder(
+            config,
+            encoder_type=encoder_type,
+            pretrained_path=pretrained_path,
+            freeze=freeze_encoder
+        )
+        print_encoder_info(self.encoder)
 
         # Spatial transformation
         self.grid_size = config.grid_size
@@ -79,6 +92,33 @@ class ViTULight(nn.Module):
         decoder_config = copy.deepcopy(config)
         decoder_config.patch_size = 4  # Match pretrained Mamba decoder expectations
 
+        # Optional: Bottleneck for dimension adaptation (e.g., 3DINO-ViT → Mamba decoders)
+        # This allows training with frozen encoder + frozen decoders, only training bottleneck
+        self.use_bottleneck = getattr(config, 'use_bottleneck', False)
+        self.encoder_dim = getattr(config, 'encoder_dim', config.embed_dim)  # May differ from embed_dim
+        self.decoder_dim = config.embed_dim  # Decoders expect this dimension
+
+        if self.use_bottleneck and self.encoder_dim != self.decoder_dim:
+            print(f"🔧 Creating bottleneck: {self.encoder_dim} → {self.decoder_dim}")
+
+            # Get hierarchical dimensions
+            encoder_dims = self._get_encoder_dims(config)
+            decoder_dims = self._get_decoder_dims(config)
+
+            # Create hierarchical bottleneck for all encoder levels
+            self.bottleneck = HierarchicalBottleneck(
+                encoder_dims=encoder_dims,
+                decoder_dims=decoder_dims,
+                hidden_ratio=getattr(config, 'bottleneck_hidden_ratio', 2.0),
+                dropout=getattr(config, 'bottleneck_dropout', 0.1),
+                activation=getattr(config, 'bottleneck_activation', 'gelu')
+            )
+
+            bottleneck_params = sum(p.numel() for p in self.bottleneck.parameters())
+            print(f"   Bottleneck parameters: {bottleneck_params:,}")
+        else:
+            self.bottleneck = None
+
         # Task-specific decoders (reuse from ours_mamba)
         self.reg_decoder = reg_decoder(decoder_config)
         self.fus_decoder = fus_decoder(decoder_config)
@@ -90,6 +130,79 @@ class ViTULight(nn.Module):
         self.ncc = losses.NCC_vxm()
         self.grad = losses.Grad3d(penalty="l2")
         self.ssim = losses.SSIM3D()
+
+    def _get_encoder_dims(self, config):
+        """Get encoder output dimensions at each hierarchical level."""
+        # For ViT encoder, dimensions scale with depth
+        base_dim = self.encoder_dim
+        depths = config.depths
+        dims = [base_dim * (2 ** i) for i in range(len(depths))]
+        return dims
+
+    def _get_decoder_dims(self, config):
+        """Get decoder input dimensions at each hierarchical level."""
+        # Decoders expect standard Mamba dimensions
+        base_dim = self.decoder_dim
+        depths = config.depths
+        dims = [base_dim * (2 ** i) for i in range(len(depths))]
+        return dims
+
+    def freeze_encoder(self):
+        """Freeze encoder parameters for bottleneck-only training."""
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+        print("❄️  Encoder frozen")
+
+    def unfreeze_encoder(self):
+        """Unfreeze encoder parameters for fine-tuning."""
+        for param in self.encoder.parameters():
+            param.requires_grad = True
+        print("🔥 Encoder unfrozen")
+
+    def freeze_decoders(self):
+        """Freeze decoder parameters."""
+        for decoder in [self.reg_decoder, self.fus_decoder, self.SR_decoder, self.IR_decoder]:
+            for param in decoder.parameters():
+                param.requires_grad = False
+        print("❄️  Decoders frozen")
+
+    def unfreeze_decoders(self):
+        """Unfreeze decoder parameters."""
+        for decoder in [self.reg_decoder, self.fus_decoder, self.SR_decoder, self.IR_decoder]:
+            for param in decoder.parameters():
+                param.requires_grad = True
+        print("🔥 Decoders unfrozen")
+
+    def freeze_bottleneck(self):
+        """Freeze bottleneck parameters."""
+        if self.bottleneck is not None:
+            for param in self.bottleneck.parameters():
+                param.requires_grad = False
+            print("❄️  Bottleneck frozen")
+
+    def unfreeze_bottleneck(self):
+        """Unfreeze bottleneck parameters."""
+        if self.bottleneck is not None:
+            for param in self.bottleneck.parameters():
+                param.requires_grad = True
+            print("🔥 Bottleneck unfrozen")
+
+    def print_trainable_status(self):
+        """Print which components are trainable."""
+        encoder_params = sum(p.numel() for p in self.encoder.parameters() if p.requires_grad)
+        decoder_params = sum(p.numel() for p in [self.reg_decoder, self.fus_decoder,
+                                                   self.SR_decoder, self.IR_decoder]
+                            for p in decoder.parameters() if p.requires_grad)
+        bottleneck_params = sum(p.numel() for p in self.bottleneck.parameters() if p.requires_grad) if self.bottleneck else 0
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+        print(f"\n📊 Trainable Parameters:")
+        print(f"   Encoder:    {encoder_params:>12,} {'✓ trainable' if encoder_params > 0 else '❄️  frozen'}")
+        print(f"   Bottleneck: {bottleneck_params:>12,} {'✓ trainable' if bottleneck_params > 0 else '❄️  frozen'}")
+        print(f"   Decoders:   {decoder_params:>12,} {'✓ trainable' if decoder_params > 0 else '❄️  frozen'}")
+        print(f"   ─────────────────────────────")
+        print(f"   Total:      {trainable_params:>12,} / {total_params:,} ({100*trainable_params/total_params:.1f}%)\n")
 
     def forward(self, raw):
         """Forward pass through selected task(s).
@@ -133,6 +246,9 @@ class ViTULight(nn.Module):
             reg_source, reg_flow = self.deform(raw)
             x = torch.cat([reg_source, raw], dim=1)
             out_feats = self.encoder(x)
+            # Apply bottleneck projection if enabled
+            if self.bottleneck is not None:
+                out_feats = self.bottleneck(out_feats)
             reg_inv_flow = self.reg_decoder(out_feats)
             reged = self.spatial_trans(reg_source, reg_inv_flow)
 
@@ -150,6 +266,9 @@ class ViTULight(nn.Module):
             fus_source_B = self.mask(raw)
             x = torch.cat([fus_source_A, fus_source_B], dim=1)
             out_feats = self.encoder(x)
+            # Apply bottleneck projection if enabled
+            if self.bottleneck is not None:
+                out_feats = self.bottleneck(out_feats)
             fused = self.fus_decoder(out_feats)
 
             logits["fus"] = {
@@ -164,6 +283,9 @@ class ViTULight(nn.Module):
             SR_source = self.downsample(raw)
             x = torch.cat([SR_source, SR_source], dim=1)
             out_feats = self.encoder(x)
+            # Apply bottleneck projection if enabled
+            if self.bottleneck is not None:
+                out_feats = self.bottleneck(out_feats)
             SRed = self.SR_decoder(out_feats)
 
             logits["SR"] = {
@@ -177,6 +299,9 @@ class ViTULight(nn.Module):
             IR_source = self.noise(raw)
             x = torch.cat([IR_source, IR_source], dim=1)
             out_feats = self.encoder(x)
+            # Apply bottleneck projection if enabled
+            if self.bottleneck is not None:
+                out_feats = self.bottleneck(out_feats)
             IRed = self.IR_decoder(out_feats)
 
             logits["IR"] = {

@@ -403,10 +403,23 @@ class ViT3DConfig(BaseConfig):
     # Task-specific
     task: str = "multi_task"
 
-    # Pretrained
-    pretrained_path: Optional[Path] = None
+    # Encoder configuration
+    encoder_type: str = "vit"  # 'mamba', 'vit', '3dino', 'huggingface'
+    pretrained_encoder_path: Optional[Path] = None
     freeze_encoder: bool = False
+
+    # Decoder configuration
     freeze_decoders: bool = False
+
+    # Bottleneck configuration (for dimension mismatch)
+    use_bottleneck: bool = False
+    encoder_dim: int = 96  # Set to 384 for 3DINO-ViT
+    bottleneck_hidden_ratio: float = 2.0
+    bottleneck_dropout: float = 0.1
+    bottleneck_activation: str = 'gelu'
+
+    # Legacy pretrained path (for backward compatibility)
+    pretrained_path: Optional[Path] = None
 
     def __post_init__(self):
         """Validate configuration."""
@@ -425,9 +438,20 @@ class ViT3DConfig(BaseConfig):
         if self.task not in valid_tasks:
             raise ValueError(f"task must be one of {valid_tasks}, got '{self.task}'")
 
-        # Convert pretrained_path if specified
+        # Validate encoder_type
+        valid_encoder_types = ['mamba', 'vit', '3dino', 'huggingface']
+        if self.encoder_type not in valid_encoder_types:
+            raise ValueError(f"encoder_type must be one of {valid_encoder_types}, got '{self.encoder_type}'")
+
+        # Convert pretrained paths if specified
         if self.pretrained_path is not None:
             self.pretrained_path = Path(self.pretrained_path)
+        if self.pretrained_encoder_path is not None:
+            self.pretrained_encoder_path = Path(self.pretrained_encoder_path)
+
+        # Validate bottleneck configuration
+        if self.use_bottleneck and self.encoder_dim == self.embed_dim:
+            print("⚠️  Warning: use_bottleneck=True but encoder_dim==embed_dim. Bottleneck is unnecessary.")
 
         # Ensure num_heads divides embed_dim evenly
         if self.embed_dim % self.num_heads != 0:
