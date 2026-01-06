@@ -7,10 +7,13 @@ Features:
 - Supports both MambaULight and ViTULight models
 - Comprehensive wandb logging (metrics, images, gradients)
 - Multi-task training (registration, fusion, SR, IR)
-- Checkpoint management and resuming
-- Mixed precision training support
-- Gradient accumulation
-- (NEW) torch.distributed DistributedDataParallel support (multi-GPU, multi-node)
+- Robust checkpoint management with wandb artifacts
+- Code and config artifact saving for reproducibility
+- Automatic best model tracking and saving
+- Mixed precision training support (AMP)
+- Gradient accumulation for large effective batch sizes
+- torch.distributed DistributedDataParallel (multi-GPU, multi-node)
+- Random cropping data augmentation
 
 Usage:
 
@@ -76,6 +79,7 @@ except ImportError as e:
     MambaULight = None
 
 import src.utils as utils
+from src.checkpoint_manager import CheckpointManager
 
 
 def set_seed(seed: int):
@@ -1075,37 +1079,23 @@ def cleanup_distributed(args):
     if args.distributed and dist.is_initialized():
         dist.destroy_process_group()
 
-def wandb_model(model, optimizer, scheduler, epoch, val_loss, config, step="latest", is_master=True):
-    """✅ FIXED WandB checkpoint - correct aliases API."""
-    if not (is_master and WANDB_AVAILABLE): 
-        return
-    
-    ckpt = {
-        'epoch': epoch,
-        'val_loss': val_loss,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
-        'config': config.to_dict(),
-    }
-    
-    filename = f"e{epoch:03d}_l{val_loss:.4f}_{step}.pth"
-    torch.save(ckpt, filename)
-    
-    # FIXED: Correct syntax - aliases in log_artifact()
-    artifact = wandb.Artifact(f"model-{config.experiment_name}", type="model")
-    artifact.add_file(filename)
-    aliases = ["latest"]
-    if step == "best":
-        aliases.append("best")
-    
-    wandb.log_artifact(artifact, aliases=aliases)  # ✅ This works!
-    
-    os.remove(filename)
-    print(f"💾 WandB {step.upper()}: e{epoch} l{val_loss:.4f}")
+# Removed: Old wandb_model function replaced by CheckpointManager class
 
 def main(args):
-    """Ultra-clean training with smart WandB checkpointing."""
+    """Main training loop with robust checkpointing and wandb integration.
+
+    This function orchestrates the complete training pipeline:
+    1. Configuration and distributed setup
+    2. WandB initialization and CheckpointManager setup
+    3. Model creation and initialization
+    4. Data loading with optional augmentation
+    5. Training loop with automatic checkpointing
+    6. Periodic validation and metric logging
+    7. Best model tracking and artifact saving
+
+    Args:
+        args: Command line arguments from ArgumentParser
+    """
     
     # === 1. CONFIG ===
     if args.model.lower() == "vit":
@@ -1130,6 +1120,16 @@ def main(args):
     # === 3. WANDB ===
     if is_master and WANDB_AVAILABLE and config.wandb_project:
         wandb.init(project=config.wandb_project, name=config.experiment_name, config=config.to_dict())
+
+    # === 3.5. CHECKPOINT MANAGER ===
+    checkpoint_manager = CheckpointManager(
+        checkpoint_dir=config.checkpoint_dir,
+        experiment_name=config.experiment_name,
+        save_code=True,
+        save_config=True,
+        max_checkpoints=5,
+        use_wandb=(is_master and WANDB_AVAILABLE and config.wandb_project)
+    ) if is_master else None
 
     # === 4. DEVICE ===
     device = torch.device("cuda", args.local_rank) if args.distributed else torch.device(config.device)
@@ -1162,10 +1162,24 @@ def main(args):
     # === 8. RESUME ===
     start_epoch, best_loss = 0, float('inf')
     if args.resume:
-        ckpt = torch.load(args.resume, map_location='cpu')
-        model_for_optim.load_state_dict(ckpt['model_state_dict'])
-        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-        start_epoch, best_loss = ckpt.get('epoch', 0), ckpt.get('val_loss', float('inf'))
+        if checkpoint_manager:
+            resume_info = checkpoint_manager.load_checkpoint(
+                Path(args.resume),
+                model_for_optim,
+                optimizer,
+                scheduler
+            )
+            start_epoch = resume_info['epoch']
+            best_loss = resume_info['val_loss']
+            if is_master:
+                print(f"✓ Resumed from epoch {start_epoch} with loss {best_loss:.6f}")
+        else:
+            # Fallback for non-master processes
+            ckpt = torch.load(args.resume, map_location='cpu')
+            model_for_optim.load_state_dict(ckpt['model_state_dict'])
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            start_epoch = ckpt.get('epoch', 0)
+            best_loss = ckpt.get('val_loss', float('inf'))
 
     # === 9. DATA ===
     train_ds = BiomedicalDataset("/group/jug/aman/orochi/data", ["hipsc_3d", "hipsc_2d"], 
@@ -1198,27 +1212,64 @@ def main(args):
         # Validate + Checkpoint
         if epoch % config.val_interval == 0:
             val_metrics = validate(model, val_loader, device, epoch, config, is_master)
-            
-            # BEST → 1 line!
-            # BEST
-            if val_metrics['loss'] < best_loss:
-                best_loss = val_metrics['loss']
-                wandb_model(model_for_optim, optimizer, scheduler, epoch, best_loss, config, "best", is_master)
 
-            # LATEST/PERIODIC
-            wandb_model(model_for_optim, optimizer, scheduler, epoch, val_metrics['loss'], config, "latest", is_master)
+            # Save checkpoints using CheckpointManager
+            if is_master and checkpoint_manager:
+                # Check if best model
+                is_best = checkpoint_manager.save_best_if_improved(
+                    model_for_optim,
+                    optimizer,
+                    scheduler,
+                    epoch,
+                    val_metrics['loss'],
+                    metrics={**train_metrics, **val_metrics},
+                    metadata={'distributed': args.distributed, 'world_size': args.world_size}
+                )
 
-            
-            # Log metrics
+                # Always save latest checkpoint
+                checkpoint_manager.save_checkpoint(
+                    model_for_optim,
+                    optimizer,
+                    scheduler,
+                    epoch,
+                    val_metrics['loss'],
+                    metrics={**train_metrics, **val_metrics},
+                    is_best=False,
+                    is_periodic=(epoch % (config.val_interval * 5) == 0),  # Every 5 validation intervals
+                    metadata={'distributed': args.distributed, 'world_size': args.world_size}
+                )
+
+            # Log metrics to wandb
             if is_master and WANDB_AVAILABLE:
-                metrics = {**{f"t_{k}": v for k, v in train_metrics.items()},
-                          **{f"v_{k}": v for k, v in val_metrics.items()}}
-                wandb.log(metrics)
+                metrics = {**{f"train_{k}": v for k, v in train_metrics.items()},
+                          **{f"val_{k}": v for k, v in val_metrics.items()},
+                          'epoch': epoch,
+                          'best_loss': checkpoint_manager.best_loss if checkpoint_manager else best_loss}
+                wandb.log(metrics, step=epoch)
         else:
+            # Log training metrics only
             if is_master and WANDB_AVAILABLE:
-                wandb.log({f"t_{k}": v for k, v in train_metrics.items()})
+                metrics = {f"train_{k}": v for k, v in train_metrics.items()}
+                metrics['epoch'] = epoch
+                wandb.log(metrics, step=epoch)
 
         if scheduler: scheduler.step(val_metrics['loss'] if epoch % config.val_interval == 0 else 0)
+
+    # === 11. CLEANUP & SUMMARY ===
+    if is_master:
+        print("\n" + "="*80)
+        print("TRAINING COMPLETE")
+        print("="*80)
+        if checkpoint_manager:
+            print(f"✓ Best model saved with loss: {checkpoint_manager.best_loss:.6f}")
+            print(f"✓ Checkpoint directory: {checkpoint_manager.checkpoint_dir}")
+            if checkpoint_manager.best_checkpoint_path:
+                print(f"✓ Best checkpoint: {checkpoint_manager.best_checkpoint_path.name}")
+        print("="*80 + "\n")
+
+        # Finish wandb run
+        if WANDB_AVAILABLE and wandb.run:
+            wandb.finish()
 
     cleanup_distributed(args)
 
