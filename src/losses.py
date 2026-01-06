@@ -611,16 +611,31 @@ class NCC_vxm(torch.nn.Module):
         I_var = I2_sum - 2 * u_I * I_sum + u_I * u_I * win_size
         J_var = J2_sum - 2 * u_J * J_sum + u_J * u_J * win_size
 
-        # Clamp variances to prevent division by zero/very small numbers
-        I_var = torch.clamp(I_var, min=1e-5)
-        J_var = torch.clamp(J_var, min=1e-5)
+        # Clamp variances to prevent negative values from numerical precision issues
+        # Use a larger epsilon to ensure numerical stability
+        I_var = torch.clamp(I_var, min=1e-4)
+        J_var = torch.clamp(J_var, min=1e-4)
 
-        # Compute normalized cross-correlation (NCC) in range [-1, 1]
-        # where 1 = perfect positive correlation, -1 = perfect negative correlation
-        cc = cross / torch.sqrt(I_var * J_var + 1e-8)
+        # Compute normalized cross-correlation (NCC) with numerical stability
+        # Add larger epsilon inside sqrt to prevent division by very small numbers
+        var_product = I_var * J_var
+        denominator = torch.sqrt(var_product + 1e-6)  # Larger epsilon for stability
 
-        # Clamp cc to valid correlation range to prevent numerical issues
+        # Clamp denominator to prevent division by extremely small values
+        denominator = torch.clamp(denominator, min=1e-3)
+
+        # Compute correlation coefficient
+        cc = cross / denominator
+
+        # Clamp cc to valid correlation range [-1, 1]
+        # This handles any remaining numerical issues
         cc = torch.clamp(cc, min=-1.0, max=1.0)
+
+        # Check for NaN/Inf and handle gracefully
+        if torch.isnan(cc).any() or torch.isinf(cc).any():
+            # Replace NaN/Inf with neutral correlation (cc=0, loss=1)
+            cc = torch.where(torch.isnan(cc) | torch.isinf(cc),
+                           torch.zeros_like(cc), cc)
 
         # Return 1 - cc so that:
         # - Perfect correlation (cc=1) gives loss=0
