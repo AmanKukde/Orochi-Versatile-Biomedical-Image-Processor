@@ -116,7 +116,7 @@ class BiomedicalDataset(Dataset):
     """Simplified biomedical dataset matching original preprocessing.
 
     Based on Pretrain_Dataset from temp/experiments/3D/datasets.py.
-    Uses min-max normalization and conditional upsampling.
+    Uses min-max normalization and conditional upsampling/downsampling with random cropping.
 
     Args:
         data_root: Root directory with dataset folders
@@ -124,6 +124,8 @@ class BiomedicalDataset(Dataset):
         img_size: Target size (D, H, W)
         split: 'train' or 'val'
         val_split: Validation split ratio (default: 0.1)
+        subset_frac: Fraction of dataset to use (for debugging)
+        use_random_crop: If True, uses random cropping instead of simple resize (default: True for train)
     """
 
     def __init__(
@@ -133,11 +135,20 @@ class BiomedicalDataset(Dataset):
         img_size=(64, 128, 128),
         split="train",
         val_split=0.1,
-        subset_frac=None
+        subset_frac=None,
+        use_random_crop=None
     ):
         self.data_root = Path(data_root)
         self.img_size = img_size
         self.subset_frac = subset_frac
+        self.split = split
+
+        # Default: use random crop for training, center crop/resize for validation
+        if use_random_crop is None:
+            self.use_random_crop = (split == "train")
+        else:
+            self.use_random_crop = use_random_crop
+
         # Collect image files (.tiff, .tif, .npy)
         self.image_files = []
         for dataset_name in datasets:
@@ -202,17 +213,63 @@ class BiomedicalDataset(Dataset):
             image_tensor.max() - image_tensor.min() + 1e-8
         )
 
-        # Resize to target size (upsample or downsample as needed)
-        image_tensor = self._resize(image_tensor)
+        # Resize to target size (upsample/downsample + crop as needed)
+        image_tensor = self._preprocess_size(image_tensor)
 
         return {"image": image_tensor, "idx": idx}
 
-    def _resize(self, image_tensor):
-        """Resize to target size (upsample or downsample as needed)."""
-        d, h, w = image_tensor.shape[1:]  # (C, D, H, W)
+    def _preprocess_size(self, image_tensor):
+        """Preprocess image to target size using upsampling and cropping.
+
+        Strategy (matching original Pretrain_Dataset):
+        1. If image is smaller than target in any dimension: upsample
+        2. If image is larger than target: random crop (train) or center crop (val)
+        3. Final resize to exact target size
+
+        Why upsample?
+        - Biomedical images often have small depth (D) dimension (e.g., 32 slices)
+        - Target size might be [64, 256, 256] but input is [32, 512, 512]
+        - Upsampling in D helps utilize full depth capacity of the model
+        - Preserves aspect ratio before cropping
+
+        Why downsample (alternative)?
+        - Could downsample all dimensions to target
+        - Simpler but loses spatial information
+        - Original implementation prefers upsampling + cropping
+        """
+        c, d, h, w = image_tensor.shape  # (C, D, H, W)
         td, th, tw = self.img_size
 
-        # Resize if dimensions don't match target
+        # Step 1: Upsample if any dimension is smaller than target
+        # This ensures we have enough spatial information before cropping
+        d_factor = max(1.0, td / d)
+        h_factor = max(1.0, th / h)
+        w_factor = max(1.0, tw / w)
+
+        if d_factor > 1 or h_factor > 1 or w_factor > 1:
+            new_d = int(d * d_factor)
+            new_h = int(h * h_factor)
+            new_w = int(w * w_factor)
+
+            image_tensor = F.interpolate(
+                image_tensor.unsqueeze(0),
+                size=(new_d, new_h, new_w),
+                mode="trilinear",
+                align_corners=False,
+            ).squeeze(0)
+
+            d, h, w = new_d, new_h, new_w
+
+        # Step 2: Crop if dimensions are larger than target
+        if self.use_random_crop:
+            # Random crop for training (data augmentation)
+            image_tensor = self._random_crop(image_tensor, self.img_size)
+        else:
+            # Center crop for validation (deterministic)
+            image_tensor = self._center_crop(image_tensor, self.img_size)
+
+        # Step 3: Final resize to exact target size (handles any remaining mismatch)
+        c, d, h, w = image_tensor.shape
         if (d, h, w) != (td, th, tw):
             image_tensor = F.interpolate(
                 image_tensor.unsqueeze(0),
@@ -220,7 +277,42 @@ class BiomedicalDataset(Dataset):
                 mode="trilinear",
                 align_corners=False,
             ).squeeze(0)
+
         return image_tensor
+
+    def _random_crop(self, image_tensor, target_size):
+        """Random crop to target size."""
+        c, d, h, w = image_tensor.shape
+        td, th, tw = target_size
+
+        # Random starting positions
+        start_d = torch.randint(0, max(1, d - td + 1), (1,)).item() if d > td else 0
+        start_h = torch.randint(0, max(1, h - th + 1), (1,)).item() if h > th else 0
+        start_w = torch.randint(0, max(1, w - tw + 1), (1,)).item() if w > tw else 0
+
+        # Crop
+        end_d = min(start_d + td, d)
+        end_h = min(start_h + th, h)
+        end_w = min(start_w + tw, w)
+
+        return image_tensor[:, start_d:end_d, start_h:end_h, start_w:end_w]
+
+    def _center_crop(self, image_tensor, target_size):
+        """Center crop to target size."""
+        c, d, h, w = image_tensor.shape
+        td, th, tw = target_size
+
+        # Center starting positions
+        start_d = max(0, (d - td) // 2) if d > td else 0
+        start_h = max(0, (h - th) // 2) if h > th else 0
+        start_w = max(0, (w - tw) // 2) if w > tw else 0
+
+        # Crop
+        end_d = min(start_d + td, d)
+        end_h = min(start_h + th, h)
+        end_w = min(start_w + tw, w)
+
+        return image_tensor[:, start_d:end_d, start_h:end_h, start_w:end_w]
 
 
 def create_model(config, model_type="vit", freeze_decoders=False):
