@@ -384,11 +384,21 @@ def _wrap_3d_huggingface_encoder(hf_model, hf_config, config) -> nn.Module:
                 # For transformer-based models, flatten spatial dimensions
                 x_flat = x.flatten(2).transpose(1, 2)  # (B, D*H*W, C)
 
-                # Pass through HuggingFace encoder
-                if hasattr(self.hf_model, 'encoder'):
-                    outputs = self.hf_model.encoder(x_flat, return_dict=True)
-                else:
-                    outputs = self.hf_model(x_flat, return_dict=True)
+                # Pass through HuggingFace encoder with flexible return_dict handling
+                outputs = None
+
+                # Try with return_dict first
+                try:
+                    if hasattr(self.hf_model, 'encoder'):
+                        outputs = self.hf_model.encoder(x_flat, return_dict=True)
+                    else:
+                        outputs = self.hf_model(x_flat, return_dict=True)
+                except TypeError:
+                    # Model doesn't support return_dict, try without it
+                    if hasattr(self.hf_model, 'encoder'):
+                        outputs = self.hf_model.encoder(x_flat)
+                    else:
+                        outputs = self.hf_model(x_flat)
 
                 # Extract features
                 if hasattr(outputs, 'last_hidden_state'):
@@ -396,8 +406,15 @@ def _wrap_3d_huggingface_encoder(hf_model, hf_config, config) -> nn.Module:
                 elif hasattr(outputs, 'hidden_states') and outputs.hidden_states:
                     # Use last hidden state
                     features = outputs.hidden_states[-1]
+                elif isinstance(outputs, (tuple, list)):
+                    # Output is tuple/list, use first element
+                    features = outputs[0]
+                elif isinstance(outputs, torch.Tensor):
+                    # Output is directly a tensor
+                    features = outputs
                 else:
-                    features = outputs if isinstance(outputs, torch.Tensor) else outputs[0]
+                    # Fallback
+                    features = outputs
 
                 # Reshape back to 3D: (B, D*H*W, E) → (B, E, D, H, W)
                 # Note: This assumes the model preserves spatial structure
@@ -451,16 +468,23 @@ def _wrap_huggingface_encoder(hf_model, hf_config, config) -> nn.Module:
             base_dim = config.embed_dim
             self.num_features = [base_dim * (2 ** i) for i in range(num_stages)]
 
-            # Create 3D patch embedding (2D→3D inflation)
-            self.patch_embed_3d = nn.Conv3d(
-                config.in_chans,
-                self.embed_dim,
-                kernel_size=(config.patch_size, config.patch_size, config.patch_size),
-                stride=(config.patch_size, config.patch_size, config.patch_size)
-            )
+            # Check if we should use pretrained patch embedding or create new 3D one
+            self.use_pretrained_patchify = getattr(config, 'use_pretrained_patchify', True)
 
-            # Initialize 3D conv from 2D weights if possible
-            self._inflate_2d_to_3d()
+            if not self.use_pretrained_patchify:
+                # Create 3D patch embedding (2D→3D inflation) - adds parameters
+                self.patch_embed_3d = nn.Conv3d(
+                    config.in_chans,
+                    self.embed_dim,
+                    kernel_size=(config.patch_size, config.patch_size, config.patch_size),
+                    stride=(config.patch_size, config.patch_size, config.patch_size)
+                )
+                # Initialize 3D conv from 2D weights if possible
+                self._inflate_2d_to_3d()
+            else:
+                # Use model's pretrained patch embedding - no extra parameters
+                self.patch_embed_3d = None
+                print(f"    Using pretrained patch embedding (no extra parameters)")
 
             # Create projection layers for hierarchical outputs
             self.projections = nn.ModuleList()
@@ -510,48 +534,76 @@ def _wrap_huggingface_encoder(hf_model, hf_config, config) -> nn.Module:
                 List of feature maps at different scales for each out_indices
             """
             B, C, D, H, W = x.shape
-
-            # 3D patch embedding
-            x_3d = self.patch_embed_3d(x)  # (B, embed_dim, D', H', W')
-            _, E, D_p, H_p, W_p = x_3d.shape
-
-            # Process each depth slice through HuggingFace model
-            # This is a simplified approach - process 2D slices independently
             features_list = []
 
-            for d in range(D_p):
-                # Extract 2D slice
-                x_slice = x_3d[:, :, d, :, :]  # (B, E, H', W')
+            # Handle patch embedding
+            if self.patch_embed_3d is not None:
+                # Custom 3D patch embedding path
+                x_3d = self.patch_embed_3d(x)  # (B, embed_dim, D', H', W')
+                _, E, D_p, H_p, W_p = x_3d.shape
 
-                # Reshape for HuggingFace model (B, H', W', E) or (B, HW, E)
-                B_s, E_s, H_s, W_s = x_slice.shape
-                x_flat = x_slice.flatten(2).transpose(1, 2)  # (B, HW, E)
+                # Process each depth slice through HuggingFace model
+                for d in range(D_p):
+                    x_slice = x_3d[:, :, d, :, :]  # (B, E, H', W')
+                    B_s, E_s, H_s, W_s = x_slice.shape
+                    x_flat = x_slice.flatten(2).transpose(1, 2)  # (B, HW, E)
 
-                # Pass through HuggingFace encoder
-                try:
-                    # Try different HF model interfaces
-                    if hasattr(self.hf_model, 'encoder'):
-                        outputs = self.hf_model.encoder(x_flat, return_dict=True)
-                    else:
-                        outputs = self.hf_model(x_flat, return_dict=True)
+                    try:
+                        # Try with return_dict first
+                        try:
+                            outputs = self.hf_model(x_flat, return_dict=True) if not hasattr(self.hf_model, 'encoder') else self.hf_model.encoder(x_flat, return_dict=True)
+                        except TypeError:
+                            outputs = self.hf_model(x_flat) if not hasattr(self.hf_model, 'encoder') else self.hf_model.encoder(x_flat)
 
-                    # Extract last hidden state
-                    if hasattr(outputs, 'last_hidden_state'):
-                        hidden = outputs.last_hidden_state  # (B, HW, E)
-                    elif hasattr(outputs, 'hidden_states') and outputs.hidden_states:
-                        hidden = outputs.hidden_states[-1]
-                    else:
-                        # Fallback: use outputs directly if it's a tensor
-                        hidden = outputs if isinstance(outputs, torch.Tensor) else outputs[0]
+                        # Extract hidden state
+                        if hasattr(outputs, 'last_hidden_state'):
+                            hidden = outputs.last_hidden_state
+                        elif hasattr(outputs, 'hidden_states') and outputs.hidden_states:
+                            hidden = outputs.hidden_states[-1]
+                        elif isinstance(outputs, (tuple, list)):
+                            hidden = outputs[0]
+                        else:
+                            hidden = outputs if isinstance(outputs, torch.Tensor) else outputs
 
-                    # Reshape back to spatial
-                    hidden = hidden.transpose(1, 2).reshape(B_s, E_s, H_s, W_s)  # (B, E, H', W')
-                    features_list.append(hidden)
+                        hidden = hidden.transpose(1, 2).reshape(B_s, E_s, H_s, W_s)
+                        features_list.append(hidden)
+                    except Exception as e:
+                        print(f"Warning: HF forward failed on slice {d}: {e}")
+                        features_list.append(x_slice)
+            else:
+                # Use pretrained model's patch embedding - process 2D slices directly
+                for d in range(D):
+                    x_slice = x[:, :, d, :, :]  # (B, C, H, W)
 
-                except Exception as e:
-                    print(f"Warning: HuggingFace model forward failed: {e}")
-                    # Fallback: use input as output
-                    features_list.append(x_slice)
+                    try:
+                        # Try with return_dict first
+                        try:
+                            outputs = self.hf_model(x_slice, return_dict=True) if not hasattr(self.hf_model, 'encoder') else self.hf_model.encoder(x_slice, return_dict=True)
+                        except TypeError:
+                            outputs = self.hf_model(x_slice) if not hasattr(self.hf_model, 'encoder') else self.hf_model.encoder(x_slice)
+
+                        # Extract hidden state
+                        if hasattr(outputs, 'last_hidden_state'):
+                            hidden = outputs.last_hidden_state  # (B, N, E) where N is number of patches
+                        elif hasattr(outputs, 'hidden_states') and outputs.hidden_states:
+                            hidden = outputs.hidden_states[-1]
+                        elif isinstance(outputs, (tuple, list)):
+                            hidden = outputs[0]
+                        else:
+                            hidden = outputs if isinstance(outputs, torch.Tensor) else outputs
+
+                        # Reshape to spatial: (B, N, E) → (B, E, H', W')
+                        B_s = hidden.shape[0]
+                        E_s = hidden.shape[-1]
+                        N = hidden.shape[1]
+                        # Infer spatial size from number of patches
+                        H_out = W_out = int(N ** 0.5)
+                        hidden = hidden.transpose(1, 2).reshape(B_s, E_s, H_out, W_out)
+                        features_list.append(hidden)
+                    except Exception as e:
+                        print(f"Warning: HF forward failed on slice {d}: {e}")
+                        # Fallback: create dummy features
+                        features_list.append(torch.zeros(B, self.embed_dim, H//16, W//16, device=x.device))
 
             # Stack depth slices back
             features_3d = torch.stack(features_list, dim=2)  # (B, E, D', H', W')

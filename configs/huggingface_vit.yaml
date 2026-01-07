@@ -101,6 +101,11 @@ hf_model_name: "google/vit-base-patch16-224"  # 768-dim, recommended
 # Use TIMM instead of HuggingFace (for TIMM-specific models)
 use_timm: false
 
+# Patch embedding strategy
+# - use_pretrained_patchify: true  → Finetune pretrained model (0 extra params, recommended)
+# - use_pretrained_patchify: false → Retrain with new 3D patch embedding (~94M extra params)
+use_pretrained_patchify: true
+
 # Freeze settings
 freeze_encoder: false  # Set to true for phase 1 (bottleneck only)
 freeze_decoders: true  # Keep decoders frozen

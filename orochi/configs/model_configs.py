@@ -412,6 +412,7 @@ class ViT3DConfig(BaseConfig):
     hf_model_name: Optional[str] = None  # e.g., 'google/vit-base-patch16-224', 'microsoft/swin-tiny-patch4-window7-224'
     use_timm: bool = False  # Use TIMM instead of HuggingFace for encoder_type='huggingface'
     is_3d_native: Optional[bool] = None  # True if model is native 3D (no weight inflation), None for auto-detect
+    use_pretrained_patchify: bool = True  # Use pretrained patch embedding (True=finetune with 0 extra params, False=retrain with new 3D patches)
 
     # Decoder configuration
     freeze_decoders: bool = False
