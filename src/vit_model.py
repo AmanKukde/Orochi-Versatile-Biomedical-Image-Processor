@@ -133,10 +133,17 @@ class ViTULight(nn.Module):
 
     def _get_encoder_dims(self, config):
         """Get encoder output dimensions at each hierarchical level."""
-        # For ViT encoder, dimensions scale with depth
-        base_dim = self.encoder_dim
         depths = config.depths
-        dims = [base_dim * (2 ** i) for i in range(len(depths))]
+        encoder_type = getattr(config, 'encoder_type', 'vit')
+
+        if encoder_type == 'huggingface' or encoder_type == '3dino':
+            # HuggingFace/3DINO ViT outputs same dimension at all levels
+            # (no hierarchical feature pyramid)
+            dims = [self.encoder_dim] * len(depths)
+        else:
+            # For Mamba/custom ViT encoder, dimensions scale with depth
+            base_dim = self.encoder_dim
+            dims = [base_dim * (2 ** i) for i in range(len(depths))]
         return dims
 
     def _get_decoder_dims(self, config):

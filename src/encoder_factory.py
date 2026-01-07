@@ -462,11 +462,23 @@ def _wrap_huggingface_encoder(hf_model, hf_config, config) -> nn.Module:
             if self.embed_dim is None:
                 self.embed_dim = getattr(hf_config, 'embed_dim', 768)
 
-            # Create hierarchical feature dimensions
-            # Match expected decoder dimensions
+            # Check if bottleneck is used (projections handled by bottleneck)
+            self.use_bottleneck = getattr(config, 'use_bottleneck', False)
+
+            # HuggingFace ViT outputs same dimension at all levels
+            # If bottleneck is used, don't apply projections here
             num_stages = len(config.out_indices)
-            base_dim = config.embed_dim
-            self.num_features = [base_dim * (2 ** i) for i in range(num_stages)]
+
+            if self.use_bottleneck:
+                # Bottleneck will handle projection from encoder_dim to decoder dims
+                # Output same dimension for all levels
+                self.num_features = [self.embed_dim] * num_stages
+                self.apply_hierarchical_proj = False
+            else:
+                # No bottleneck - apply hierarchical projections directly
+                base_dim = config.embed_dim
+                self.num_features = [base_dim * (2 ** i) for i in range(num_stages)]
+                self.apply_hierarchical_proj = True
 
             # Check if we should use pretrained patch embedding or create new 3D one
             self.use_pretrained_patchify = getattr(config, 'use_pretrained_patchify', True)
@@ -486,14 +498,18 @@ def _wrap_huggingface_encoder(hf_model, hf_config, config) -> nn.Module:
                 self.patch_embed_3d = None
                 print(f"    Using pretrained patch embedding (no extra parameters)")
 
-            # Create projection layers for hierarchical outputs
-            self.projections = nn.ModuleList()
-            for i, feat_dim in enumerate(self.num_features):
-                if self.embed_dim != feat_dim:
-                    # Need projection to match decoder expectations
-                    self.projections.append(nn.Conv3d(self.embed_dim, feat_dim, 1))
-                else:
-                    self.projections.append(nn.Identity())
+            # Create projection layers for hierarchical outputs (only if no bottleneck)
+            if self.apply_hierarchical_proj:
+                self.projections = nn.ModuleList()
+                for i, feat_dim in enumerate(self.num_features):
+                    if self.embed_dim != feat_dim:
+                        # Need projection to match decoder expectations
+                        self.projections.append(nn.Conv3d(self.embed_dim, feat_dim, 1))
+                    else:
+                        self.projections.append(nn.Identity())
+            else:
+                # No projections needed - bottleneck will handle it
+                self.projections = None
 
             print(f"  HuggingFace wrapper created:")
             print(f"    Input: 3D volumes (B, {config.in_chans}, D, H, W)")
@@ -608,11 +624,16 @@ def _wrap_huggingface_encoder(hf_model, hf_config, config) -> nn.Module:
             # Stack depth slices back
             features_3d = torch.stack(features_list, dim=2)  # (B, E, D', H', W')
 
-            # Create hierarchical outputs by projecting to different dimensions
-            hierarchical_features = []
-            for proj in self.projections:
-                feat = proj(features_3d)
-                hierarchical_features.append(feat)
+            # Create hierarchical outputs
+            if self.apply_hierarchical_proj:
+                # Apply projections to create different dimensions per level
+                hierarchical_features = []
+                for proj in self.projections:
+                    feat = proj(features_3d)
+                    hierarchical_features.append(feat)
+            else:
+                # No projections - return same features for all levels (bottleneck will handle projection)
+                hierarchical_features = [features_3d] * len(self.num_features)
 
             return hierarchical_features
 
