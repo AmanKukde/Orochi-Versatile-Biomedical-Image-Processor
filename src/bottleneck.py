@@ -89,10 +89,18 @@ class BottleneckFFN(nn.Module):
         Returns:
             Projected tensor with decoder_dim
         """
-        # Store input for potential residual
-        identity = x
+        # Check if input is 5D (B, C, D, H, W) - need to permute to channel-last
+        is_5d = (x.ndim == 5)
 
-        # Normalize input
+        if is_5d:
+            # Permute from (B, C, D, H, W) to (B, D, H, W, C) for LayerNorm
+            x = x.permute(0, 2, 3, 4, 1)
+            identity = x
+        else:
+            # Already in (B, N, C) format
+            identity = x
+
+        # Normalize input (operates on last dimension)
         x = self.norm1(x)
 
         # First projection
@@ -110,6 +118,10 @@ class BottleneckFFN(nn.Module):
 
         # Output normalization
         x = self.norm2(x)
+
+        # Permute back to (B, C, D, H, W) if input was 5D
+        if is_5d:
+            x = x.permute(0, 4, 1, 2, 3)  # (B, D, H, W, C) -> (B, C, D, H, W)
 
         return x
 
