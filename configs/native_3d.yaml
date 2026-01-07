@@ -1,0 +1,123 @@
+# Native 3D Model Training Configuration
+#
+# For models that are already 3D (no weight inflation needed)
+# Examples: Medical imaging models, Video ViT, 3D CNNs, MONAI models
+
+# Paths
+data_root: /group/jug/aman/orochi/data/
+
+checkpoint_dir: ./checkpoints/native_3d
+log_dir: ./logs/native_3d
+output_dir: ./outputs/native_3d
+
+# Device
+device: cuda
+gpu_ids: [0]
+num_workers: 4
+
+# Training
+batch_size: 3
+num_epochs: 100
+learning_rate: 0.00001  # Lower LR for finetuning pretrained
+weight_decay: 0.00001
+grad_clip: 1.0
+
+# Optimizer
+optimizer: adamw
+betas: [0.9, 0.999]
+
+# Scheduler
+scheduler: cosine
+min_lr: 0.0000001
+
+# Logging
+log_interval: 10
+save_interval: 100
+val_interval: 1
+wandb_project: orochi-native3d
+experiment_name: native_3d_finetune
+
+# Reproducibility
+seed: 42
+deterministic: false
+
+# Model architecture
+img_size: [32, 224, 224]
+grid_size: [32, 224, 224]
+patch_size: 16
+
+in_chans: 2
+out_chans: 3
+embed_dim: 128  # Mamba decoder dimension
+
+depths: [2, 2, 4, 2]
+num_heads: 8
+
+# ViT-specific parameters
+mlp_ratio: 4.0
+qkv_bias: true
+attn_drop_rate: 0.0
+proj_drop_rate: 0.0
+
+# Architecture details
+patch_norm: true
+drop_rate: 0.1
+drop_path_rate: 0.1
+out_indices: [0, 1, 2, 3]
+if_convskip: true
+if_transskip: true
+pat_merg_rf: 2
+decoder_head_chan: 16
+window_size: [5, 6, 7]
+use_checkpoint: false
+
+# SSM parameters (unused in ViT)
+ssm_cfg: null
+fused_add_norm: false
+residual_in_fp32: false
+rms_norm: false
+norm_epsilon: 0.00001
+initializer_cfg: null
+
+# Task-specific
+task: multi_task
+
+# Encoder configuration
+encoder_type: "huggingface"  # Use HuggingFace encoder
+
+# Native 3D model name (examples)
+# Medical imaging models
+# hf_model_name: "your-org/your-3d-medical-model"  # Your custom 3D model
+
+# Video models (can be adapted to medical volumes)
+# hf_model_name: "MCG-NJU/videomae-base"  # Video ViT
+# hf_model_name: "facebook/timesformer-base-finetuned-k400"  # TimeSformer
+
+# MONAI models (if uploaded to HuggingFace)
+# hf_model_name: "monai/medical-vit-3d"  # Example MONAI model
+
+# For now, use placeholder (will need actual 3D model)
+hf_model_name: "google/vit-base-patch16-224"  # UPDATE THIS to actual 3D model
+
+# IMPORTANT: Set this to True for native 3D models
+is_3d_native: true  # No weight inflation, direct 3D processing
+
+# Use TIMM instead of HuggingFace (optional)
+use_timm: false
+
+# Freeze settings
+freeze_encoder: false  # Set to true for phase 1 (bottleneck only)
+freeze_decoders: true  # Keep decoders frozen
+
+# Bottleneck configuration (required for dimension mismatch)
+use_bottleneck: true
+encoder_dim: 768  # Model hidden size (adjust for your model)
+bottleneck_hidden_ratio: 2.0
+bottleneck_dropout: 0.1
+bottleneck_activation: "gelu"
+
+# Legacy pretrained path (for loading Mamba decoder weights)
+pretrained_path: "/home/aman.kukde/MambaSplit/Orochi-Versatile-Biomedical-Image-Processor/pretrained_checkpoints/mamba_fm_3d.pth.tar"
+
+# Dataset
+subset: 0

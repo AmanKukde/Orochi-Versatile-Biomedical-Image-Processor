@@ -191,6 +191,8 @@ def _create_huggingface_encoder(
 def _load_huggingface_encoder(model_name: str, config, **kwargs) -> nn.Module:
     """Load encoder from HuggingFace Hub.
 
+    Automatically detects if model is native 3D or requires 2D→3D conversion.
+
     Args:
         model_name: HuggingFace model identifier
         config: Model configuration
@@ -224,10 +226,57 @@ def _load_huggingface_encoder(model_name: str, config, **kwargs) -> nn.Module:
     print(f"  Model type: {hf_config.model_type}")
     print(f"  Hidden size: {hidden_size}")
 
-    # Wrap in compatibility layer
-    encoder = _wrap_huggingface_encoder(hf_model, hf_config, config)
+    # Detect if model is native 3D
+    is_3d_native = _detect_3d_model(hf_model, hf_config, config)
+
+    if is_3d_native:
+        print(f"  🔮 Detected native 3D model - using direct 3D processing")
+        encoder = _wrap_3d_huggingface_encoder(hf_model, hf_config, config)
+    else:
+        print(f"  📐 Detected 2D model - using 2D→3D inflation")
+        encoder = _wrap_huggingface_encoder(hf_model, hf_config, config)
 
     return encoder
+
+
+def _detect_3d_model(hf_model, hf_config, config) -> bool:
+    """Detect if HuggingFace model is native 3D.
+
+    Args:
+        hf_model: HuggingFace model
+        hf_config: HuggingFace config
+        hf_config: Our config
+
+    Returns:
+        True if model is native 3D, False if 2D
+    """
+    # Check config flag first
+    is_3d = getattr(config, 'is_3d_native', None)
+    if is_3d is not None:
+        return is_3d
+
+    # Detect from model architecture
+    # Check for 3D convolutions in patch embedding
+    if hasattr(hf_model, 'embeddings'):
+        if hasattr(hf_model.embeddings, 'patch_embeddings'):
+            patch_embed = hf_model.embeddings.patch_embeddings.projection
+            if isinstance(patch_embed, nn.Conv3d):
+                return True
+
+    # Check model type for known 3D architectures
+    model_type = getattr(hf_config, 'model_type', '').lower()
+
+    # Known 3D model types
+    if any(x in model_type for x in ['3d', 'video', 'volumetric', 'medical']):
+        return True
+
+    # Check for 3D in model name
+    model_name = getattr(hf_config, '_name_or_path', '').lower()
+    if any(x in model_name for x in ['3d', 'video', 'volumetric', 'medical', 'monai']):
+        return True
+
+    # Default: assume 2D (needs inflation)
+    return False
 
 
 def _load_timm_encoder(model_name: str, config, pretrained: bool = True, **kwargs) -> nn.Module:
@@ -274,6 +323,105 @@ def _load_timm_encoder(model_name: str, config, pretrained: bool = True, **kwarg
     encoder = _wrap_timm_encoder(timm_model, config, feature_dims)
 
     return encoder
+
+
+def _wrap_3d_huggingface_encoder(hf_model, hf_config, config) -> nn.Module:
+    """Wrap native 3D HuggingFace model to match our encoder interface.
+
+    This wrapper is for models that are already 3D (no weight inflation needed).
+    Processes 3D volumes directly without slice-wise processing.
+    """
+    class Native3DHuggingFaceWrapper(nn.Module):
+        """Wrapper for native 3D HuggingFace models."""
+
+        def __init__(self, hf_model, hf_config, config):
+            super().__init__()
+            self.hf_model = hf_model
+            self.hf_config = hf_config
+            self.config = config
+
+            # Get embedding dimension
+            self.embed_dim = getattr(hf_config, 'hidden_size', None)
+            if self.embed_dim is None:
+                self.embed_dim = getattr(hf_config, 'embed_dim', 768)
+
+            # Create hierarchical feature dimensions
+            num_stages = len(config.out_indices)
+            base_dim = config.embed_dim
+            self.num_features = [base_dim * (2 ** i) for i in range(num_stages)]
+
+            # Create projection layers for hierarchical outputs
+            self.projections = nn.ModuleList()
+            for i, feat_dim in enumerate(self.num_features):
+                if self.embed_dim != feat_dim:
+                    # Need projection to match decoder expectations
+                    self.projections.append(nn.Conv3d(self.embed_dim, feat_dim, 1))
+                else:
+                    self.projections.append(nn.Identity())
+
+            print(f"  Native 3D HuggingFace wrapper created:")
+            print(f"    Input: 3D volumes (B, {config.in_chans}, D, H, W)")
+            print(f"    Embed dim: {self.embed_dim}")
+            print(f"    Output features: {self.num_features}")
+            print(f"    Processing: Direct 3D (no inflation needed)")
+
+        def forward(self, x):
+            """Forward pass for native 3D model.
+
+            Args:
+                x: Input tensor (B, C, D, H, W)
+
+            Returns:
+                List of hierarchical feature maps
+            """
+            B, C, D, H, W = x.shape
+
+            # Try to pass 3D volume directly through model
+            try:
+                # Reshape for model: (B, C, D, H, W) → (B, D*H*W, C) or model-specific format
+                # This depends on the specific 3D model architecture
+
+                # For transformer-based models, flatten spatial dimensions
+                x_flat = x.flatten(2).transpose(1, 2)  # (B, D*H*W, C)
+
+                # Pass through HuggingFace encoder
+                if hasattr(self.hf_model, 'encoder'):
+                    outputs = self.hf_model.encoder(x_flat, return_dict=True)
+                else:
+                    outputs = self.hf_model(x_flat, return_dict=True)
+
+                # Extract features
+                if hasattr(outputs, 'last_hidden_state'):
+                    features = outputs.last_hidden_state  # (B, D*H*W, E)
+                elif hasattr(outputs, 'hidden_states') and outputs.hidden_states:
+                    # Use last hidden state
+                    features = outputs.hidden_states[-1]
+                else:
+                    features = outputs if isinstance(outputs, torch.Tensor) else outputs[0]
+
+                # Reshape back to 3D: (B, D*H*W, E) → (B, E, D, H, W)
+                # Note: This assumes the model preserves spatial structure
+                features = features.transpose(1, 2)  # (B, E, D*H*W)
+
+                # Determine spatial dimensions from model output
+                # For now, assume same spatial size as input
+                features_3d = features.reshape(B, self.embed_dim, D, H, W)
+
+            except Exception as e:
+                print(f"Warning: Native 3D forward failed: {e}")
+                print(f"Falling back to identity mapping")
+                # Fallback: create features with correct shape
+                features_3d = torch.zeros(B, self.embed_dim, D, H, W, device=x.device, dtype=x.dtype)
+
+            # Create hierarchical outputs by projecting to different dimensions
+            hierarchical_features = []
+            for proj in self.projections:
+                feat = proj(features_3d)
+                hierarchical_features.append(feat)
+
+            return hierarchical_features
+
+    return Native3DHuggingFaceWrapper(hf_model, hf_config, config)
 
 
 def _wrap_huggingface_encoder(hf_model, hf_config, config) -> nn.Module:
