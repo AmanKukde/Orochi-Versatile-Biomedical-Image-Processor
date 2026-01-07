@@ -373,8 +373,12 @@ def _wrap_3d_huggingface_encoder(hf_model, hf_config, config) -> nn.Module:
 
             Returns:
                 List of hierarchical feature maps
+                First element is always the input tensor (matches Mamba encoder)
             """
             B, C, D, H, W = x.shape
+
+            # Store input tensor (first feature - matches Mamba encoder behavior)
+            input_tensor = x.clone()
 
             # Try to pass 3D volume directly through model
             try:
@@ -435,6 +439,9 @@ def _wrap_3d_huggingface_encoder(hf_model, hf_config, config) -> nn.Module:
             for proj in self.projections:
                 feat = proj(features_3d)
                 hierarchical_features.append(feat)
+
+            # Prepend input tensor as first feature (matches Mamba encoder)
+            hierarchical_features = [input_tensor] + hierarchical_features
 
             return hierarchical_features
 
@@ -548,8 +555,13 @@ def _wrap_huggingface_encoder(hf_model, hf_config, config) -> nn.Module:
 
             Returns:
                 List of feature maps at different scales for each out_indices
+                First element is always the input tensor (matches Mamba encoder)
             """
             B, C, D, H, W = x.shape
+
+            # Store input tensor (first feature - matches Mamba encoder behavior)
+            input_tensor = x.clone()
+
             features_list = []
 
             # Handle patch embedding
@@ -634,6 +646,9 @@ def _wrap_huggingface_encoder(hf_model, hf_config, config) -> nn.Module:
             else:
                 # No projections - return same features for all levels (bottleneck will handle projection)
                 hierarchical_features = [features_3d] * len(self.num_features)
+
+            # Prepend input tensor as first feature (matches Mamba encoder)
+            hierarchical_features = [input_tensor] + hierarchical_features
 
             return hierarchical_features
 
