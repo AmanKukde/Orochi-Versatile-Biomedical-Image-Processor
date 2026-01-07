@@ -1,9 +1,12 @@
-# Orochi
+# Orochi: Versatile Biomedical Image Processor
+
 Official Implementation for "Orochi: Versatile Biomedical Image Processor"
 
-Please cite our paper if you use the code and data we provide
+**Enhanced with modular encoder support, including Vision Transformers, HuggingFace models, and 3DINO-ViT integration.**
 
-```bash
+## Citation
+
+```bibtex
 @article{dai2025orochi,
   title={Orochi: Versatile Biomedical Image Processor},
   author={Dai, Gaole and Zhou, Chenghao and Zhou, Yu and Zhang, Rongyu and Zhang, Yuan and Hou, Chengkai and Huang, Tiejun and Chen, Jianxu and Zhang, Shanghang},
@@ -12,84 +15,383 @@ Please cite our paper if you use the code and data we provide
 }
 ```
 
-## Environment
+## Features
 
-### 1. Create the environment
+✨ **Multi-Task Learning**: Registration, Fusion, Super-Resolution, Isotropic Restoration
+🔧 **Modular Encoder Architecture**: Easy swapping between Mamba, ViT, 3DINO-ViT, HuggingFace models
+📦 **HuggingFace Integration**: Load any pretrained ViT directly from HuggingFace Hub
+🎯 **Bottleneck FFN**: Automatic dimension adaptation for pretrained models
+🔮 **Native 3D Support**: Direct 3D processing for medical imaging models
+📊 **Robust Checkpointing**: WandB integration with code/config artifacts
+🚀 **Production Ready**: SLURM batch scripts and comprehensive documentation
 
-You can clone this repo via git
+---
+
+## Quick Start
+
+### 1. Installation
+
 ```bash
-git clone git@github.com:jnjnnjzch/foundation-mamba-biomed.git
-```
-Then create the environment via this command:
-```bash
+# Clone repository
+git clone https://github.com/your-org/Orochi-Versatile-Biomedical-Image-Processor.git
+cd Orochi-Versatile-Biomedical-Image-Processor
+
+# Create environment
 conda env create -f environment.yaml
-```
-### 2. Modify the codes of specific package
+conda activate orochi
 
-2.1 You might get the site-package path by running this command in the created python enviroment.
+# Install required packages
+pip install transformers timm wandb
+```
+
+### 2. Mamba SSM Fix
+
+Add this line at line 777 in `[site-packages]/mamba_ssm/ops/triton/ssd_combined.py`:
+
+```python
+xBC = xBC.contiguous()  # <-- Add this line
+```
+
+### 3. Download Pretrained Checkpoints
+
+**Mamba Pretrained Models:**
+- [2D Model](https://huggingface.co/eternalaudrey/mamba-fm-2d-ckpt)
+- [3D Model](https://huggingface.co/eternalaudrey/mamba-fm-3d-ckpt)
 
 ```bash
-python -c "import site; print(site.getsitepackages())"
+# Download and place in pretrained_checkpoints/
+wget https://huggingface.co/eternalaudrey/mamba-fm-3d-ckpt/resolve/main/mamba_fm_3d.pth.tar
 ```
 
-2.2 Then, you may need to add codes at the 777th line in `[site-package path]/mamba_ssm/ops/triton/ssd_combined.py`. 
+---
+
+## Training
+
+### Option 1: Standard ViT Encoder
+
+```bash
+# Edit config
+vim configs/vit_finetune.yaml
+
+# Submit SLURM job
+sbatch train.sh
+```
+
+### Option 2: HuggingFace Pretrained ViT
+
+```bash
+# Edit config
+vim configs/huggingface_vit.yaml
+# Set: hf_model_name: "google/vit-base-patch16-224"
+
+# Submit job
+sbatch train_huggingface.sh
+```
+
+### Option 3: 3DINO-ViT (Two-Phase)
+
+**Phase 1: Train bottleneck**
+```bash
+# Edit config with 3DINO checkpoint path
+vim configs/3dino_bottleneck.yaml
+
+# Train bottleneck only (encoder + decoders frozen)
+sbatch train_3dino_phase1.sh
+```
+
+**Phase 2: Finetune encoder**
+```bash
+# Update phase 1 checkpoint path in script
+vim train_3dino_phase2.sh
+
+# Finetune encoder (decoders frozen)
+sbatch train_3dino_phase2.sh
+```
+
+### Option 4: Mamba Encoder
+
+```bash
+sbatch train_mamba.sh
+```
+
+---
+
+## Documentation
+
+### Core Guides
+
+📖 **[ENCODER_GUIDE.md](ENCODER_GUIDE.md)** - Complete guide to encoder swapping
+- Available encoders (Mamba, ViT, 3DINO, HuggingFace)
+- Configuration examples
+- Two-phase training strategy
+- Troubleshooting
+
+📦 **[HUGGINGFACE_GUIDE.md](HUGGINGFACE_GUIDE.md)** - HuggingFace model loading
+- Supported models (Google ViT, DeiT, Swin)
+- 2D→3D weight inflation
+- Native 3D model support
+- Model selection guide
+
+🖥️ **[SLURM_TRAINING_GUIDE.md](SLURM_TRAINING_GUIDE.md)** - SLURM cluster training
+- Batch script usage
+- Job management
+- Resource configuration
+- Two-phase training workflow
+
+### Additional Resources
+
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Model architecture details
+- **[docs/TRAINING_GUIDE.md](docs/TRAINING_GUIDE.md)** - Training best practices
+- **[docs/GLOSSARY.md](docs/GLOSSARY.md)** - Technical terminology
+
+---
+
+## Supported Encoders
+
+| Encoder | Type | Pretrained | Bottleneck | Use Case |
+|---------|------|------------|------------|----------|
+| **Mamba** | SSM | ✓ | Optional | Fast, efficient |
+| **ViT** | Transformer | ✓ | Optional | Standard baseline |
+| **3DINO-ViT** | Biomedical ViT | ✓ | Required | Transfer learning |
+| **HuggingFace ViT** | Any HF model | ✓ | Required | Experimentation |
+| **TIMM** | 1000+ models | ✓ | Required | Wide selection |
+| **Native 3D** | Medical/Video | ✓ | Required | Direct 3D |
+
+---
+
+## Configuration Examples
+
+### Standard ViT
+
+```yaml
+encoder_type: "vit"
+embed_dim: 128
+freeze_decoders: true
+```
+
+### HuggingFace ViT-Base
+
+```yaml
+encoder_type: "huggingface"
+hf_model_name: "google/vit-base-patch16-224"
+use_bottleneck: true
+encoder_dim: 768
+embed_dim: 128
+```
+
+### 3DINO-ViT
+
+```yaml
+encoder_type: "3dino"
+pretrained_encoder_path: "/path/to/3dino.pth"
+use_bottleneck: true
+encoder_dim: 384
+embed_dim: 128
+freeze_encoder: true  # Phase 1
+freeze_decoders: true
+```
+
+### Native 3D Model
+
+```yaml
+encoder_type: "huggingface"
+hf_model_name: "your-org/your-3d-model"
+is_3d_native: true  # No weight inflation
+use_bottleneck: true
+encoder_dim: 768
+```
+
+---
+
+## Training Scripts
+
+| Script | Purpose | Encoder | Duration |
+|--------|---------|---------|----------|
+| `train.sh` | ViT training | ViT | 36h |
+| `train_mamba.sh` | Mamba training | Mamba | 36h |
+| `train_huggingface.sh` | HF models | HF ViT | 36h |
+| `train_3dino_phase1.sh` | Bottleneck only | 3DINO | 36h |
+| `train_3dino_phase2.sh` | Encoder finetune | 3DINO | 72h |
+| `train_local.sh` | Local/interactive | Any | Variable |
+
+---
+
+## Datasets
+
+### Pretraining Datasets
+
+- **hiPSC 2D**: [eternalaudrey/hipsc_2d](https://huggingface.co/datasets/eternalaudrey/hipsc_2d)
+- **hiPSC 3D**: [eternalaudrey/hipsc_3d](https://huggingface.co/datasets/eternalaudrey/hipsc_3d)
+- **HiP-CT 2D**: [eternalaudrey/hipct_2d](https://huggingface.co/datasets/eternalaudrey/hipct_2d)
+- **IDR 2D**: [eternalaudrey/idr_2d](https://huggingface.co/datasets/eternalaudrey/idr_2d)
+- **IDR Raw**: [eternalaudrey/idr-01-04](https://huggingface.co/collections/eternalaudrey/idr)
+
+### Finetuning Datasets
+
+- **Super-Resolution**: [UniFMIR](https://zenodo.org/records/8401470) (BioSR datasets)
+- **Isotropic Restoration**: [UniFMIR](https://zenodo.org/records/8401470) (Isotropic_Liver)
+- **Fusion**: [Harvard Medical](http://www.med.harvard.edu/aanlib/)
+- **Registration**: [TransMorph](https://drive.google.com/uc?export=download&id=1BdEaylMDpeXtyuX5QH8l_Ut4OgenKss4)
+
+---
+
+## Architecture Overview
+
+```
+Input 3D Volume (B, 2, 32, 224, 224)
+    ↓
+┌─────────────────────────────────────┐
+│  Encoder (Mamba/ViT/HF/3DINO)      │
+│  - Hierarchical features            │
+│  - Multi-scale processing           │
+└─────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────┐
+│  Bottleneck FFN (optional)          │
+│  - Dimension adaptation             │
+│  - e.g., 768→128 or 384→128        │
+└─────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────┐
+│  Task-Specific Decoders             │
+│  - Registration (flow prediction)   │
+│  - Fusion (multi-modal merge)       │
+│  - Super-Resolution (upsampling)    │
+│  - Isotropic Restoration (denoise)  │
+└─────────────────────────────────────┘
+    ↓
+Multi-Task Outputs
+```
+
+---
+
+## Key Improvements
+
+### Modular Encoder Factory
+
+Easily swap encoders via configuration:
+
 ```python
-        assert zxbcdt.shape == (batch, seqlen, 2 * d_nonssm + 2 * dim + 2 * ngroups * dstate + nheads)
-        assert dt_bias.shape == (nheads,)
-        assert A.shape == (nheads,)
-        zx0, z, xBC, dt = torch.split(zxbcdt, [2 * d_nonssm, dim, dim + ngroups * dstate * 2, nheads], dim=-1)
-        xBC = xBC.contiguous() # <------------- Add this line of code!!!
-        seq_idx = seq_idx.contiguous() if seq_idx is not None else None
-        xBC_conv = rearrange(
-            causal_conv1d_cuda.causal_conv1d_fwd(rearrange(xBC, "b s d -> b d s"),
-                                                 conv1d_weight, conv1d_bias, seq_idx, None, None, activation in ["silu", "swish"]),
-            "b d s -> b s d"
-        )
+from src.encoder_factory import create_encoder
+
+# Create ViT encoder
+encoder = create_encoder(config, encoder_type='vit')
+
+# Load HuggingFace ViT
+encoder = create_encoder(config, encoder_type='huggingface',
+                        model_name='google/vit-base-patch16-224')
 ```
 
-## Pretrain Orochi
+### Bottleneck FFN
 
-### 🧬 Dataset
-- **hiPSC 2D**: [eternalaudrey/hipsc_2d](https://huggingface.co/datasets/eternalaudrey/hipsc_2d)  
-- **hiPSC 3D**: [eternalaudrey/hipsc_3d](https://huggingface.co/datasets/eternalaudrey/hipsc_3d)  
-- **HiP-CT 2D**: [eternalaudrey/hipct_2d](https://huggingface.co/datasets/eternalaudrey/hipct_2d)  
-- **IDR 2D**: [eternalaudrey/idr_2d](https://huggingface.co/datasets/eternalaudrey/idr_2d)  
-- **IDR Raw**:  
-  - [eternalaudrey/idr-01](https://huggingface.co/datasets/eternalaudrey/idr-01)  
-  - [eternalaudrey/idr-02](https://huggingface.co/datasets/eternalaudrey/idr-02)  
-  - [eternalaudrey/idr-03](https://huggingface.co/datasets/eternalaudrey/idr-03)  
-  - [eternalaudrey/idr-04](https://huggingface.co/datasets/eternalaudrey/idr-04)
+Automatically adapt dimensions between encoder and decoders:
 
-### 💾 Checkpoints
-- **2D Pretrained Model**: [eternalaudrey/mamba-fm-2d-ckpt](https://huggingface.co/eternalaudrey/mamba-fm-2d-ckpt)  
-- **3D Pretrained Model**: [eternalaudrey/mamba-fm-3d-ckpt](https://huggingface.co/eternalaudrey/mamba-fm-3d-ckpt)
+```python
+# 3DINO (384-dim) → Mamba decoders (128-dim)
+config.use_bottleneck = True
+config.encoder_dim = 384
+config.embed_dim = 128
+```
 
+### Robust Checkpointing
 
+Automatic saving of best models, code, and config:
 
-### 1. Prepare the datasets
+```python
+from src.checkpoint_manager import CheckpointManager
 
-For finetune, you can download dataset according to different tasks.
+manager = CheckpointManager(
+    checkpoint_dir='./checkpoints',
+    save_code=True,
+    save_config=True,
+    use_wandb=True
+)
+```
 
-The dataset used in our finetune process can be download as follows:
-- Super resolution
-    - 2D: [Unifmir Zendo repository](https://zenodo.org/records/8401470), download the data with "BioSR" prefix and unzip into the corresponding folders.
-    - 3D: InverseSR
+---
 
-- Isotropic restoration
-    - 2D: [Unifmir Zendo repository](https://zenodo.org/records/8401470), download the `Isotropic_Liver.tgz` and unzip into the corresponding folders. You may need to use the provided preprocess code in `./data_preprocess` to manage the data.
+## Testing
 
-- Fusion
-    - 2D: Download datasets form: http://www.med.harvard.edu/aanlib/, and copy to the corresponding folders. You may need to use the provided preprocess code in `./data_preprocess` to manage the data. ([this link](https://github.com/xianming-gu/ASFE-Fusion).)
+### Visualization Notebooks
 
-- Registration
-    - 3D: [Transmorph githubrepository](https://github.com/junyuchen245/TransMorph_Transformer_for_Medical_Image_Registration.git) Downlaod datasets from https://drive.google.com/uc?export=download&id=1BdEaylMDpeXtyuX5QH8l_Ut4OgenKss4
+- **`visualize_degradations.ipynb`**: See synthetic degradations
+- **`test_metrics.ipynb`**: Batched inference and metrics
+- **`test_trained_model.ipynb`**: Load and test trained models
 
+### Run Tests
 
-### 2. Finetune models
+```bash
+# Test dataloader
+python scripts/test_dataloader.py
 
-You can run the codes in `./experiments/[2D or 3D]/scripts/[Task names]` folder to finetune the pretrained models. 
+# Test inference
+python src/inference_test.py
+```
 
-### 3. Test models
+---
 
-You can run the jupyter notebooks in `./experiments/[2D or 3D]/scripts/[Task names]` folder to evaluate the finetuned models.
+## Project Structure
 
+```
+Orochi/
+├── configs/                    # Training configurations
+│   ├── vit_finetune.yaml
+│   ├── huggingface_vit.yaml
+│   ├── 3dino_bottleneck.yaml
+│   └── 3dino_finetune.yaml
+├── src/                        # Source code
+│   ├── encoder_factory.py      # Modular encoder creation
+│   ├── bottleneck.py           # Dimension adaptation
+│   ├── checkpoint_manager.py   # Checkpoint management
+│   ├── vit_model.py            # Main model
+│   ├── vit_encoder.py          # ViT encoder
+│   ├── ours_mamba.py           # Mamba encoder + decoders
+│   └── finetune_with_wandb.py  # Training script
+├── docs/                       # Additional documentation
+├── notebooks/                  # Jupyter notebooks
+├── scripts/                    # Utility scripts
+├── train*.sh                   # SLURM batch scripts
+└── README.md                   # This file
+```
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+1. **SLURM DOS line breaks**: Scripts have Unix line endings (LF)
+2. **HuggingFace not found**: Install with `pip install transformers`
+3. **TIMM not found**: Install with `pip install timm`
+4. **OOM errors**: Reduce batch size or use gradient accumulation
+5. **Dimension mismatch**: Enable bottleneck with correct `encoder_dim`
+
+See **[ENCODER_GUIDE.md](ENCODER_GUIDE.md)** and **[HUGGINGFACE_GUIDE.md](HUGGINGFACE_GUIDE.md)** for detailed troubleshooting.
+
+---
+
+## Contributing
+
+Contributions are welcome! Please see our contribution guidelines.
+
+---
+
+## License
+
+This project is licensed under the MIT License - see LICENSE file for details.
+
+---
+
+## Acknowledgments
+
+- Original Orochi paper and codebase
+- HuggingFace Transformers library
+- TIMM (PyTorch Image Models)
+- Mamba SSM architecture
+- 3DINO-ViT for biomedical pretraining
+
+---
+
+## Contact
+
+For questions and issues, please open a GitHub issue or contact the authors.
