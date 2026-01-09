@@ -1,0 +1,52 @@
+# Git attributes for Orochi project
+
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Python files
+*.py text eol=lf
+*.pyx text eol=lf
+*.pxd text eol=lf
+
+# Jupyter notebooks
+*.ipynb text eol=lf
+
+# Documentation
+*.md text eol=lf
+*.rst text eol=lf
+*.txt text eol=lf
+
+# Configuration files
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
+
+# Shell scripts
+*.sh text eol=lf
+
+# Binary files
+*.pkl binary
+*.npy binary
+*.npz binary
+*.h5 binary
+*.hdf5 binary
+*.nii binary
+*.nii.gz binary
+*.tif binary
+*.tiff binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+
+# Model weights
+*.pth binary
+*.pt binary
+*.ckpt binary
+
+# Archives
+*.zip binary
+*.tar binary
+*.gz binary

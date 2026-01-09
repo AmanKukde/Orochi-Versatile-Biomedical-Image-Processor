@@ -1,0 +1,23 @@
+[flake8]
+# Flake8 configuration for Orochi project
+max-line-length = 100
+extend-ignore =
+    E203,  # whitespace before ':'
+    E501,  # line too long (handled by black)
+    W503,  # line break before binary operator
+    E402,  # module level import not at top of file
+exclude =
+    .git,
+    __pycache__,
+    build,
+    dist,
+    .eggs,
+    *.egg-info,
+    .tox,
+    .venv,
+    venv,
+    temp,
+    experiments,
+per-file-ignores =
+    __init__.py:F401,F403  # Allow unused imports in __init__.py
+max-complexity = 15
