@@ -3,3 +3,8 @@
 **/checkpoints/
 
 **/notebooks
+
+**/wandb/
+test.ipynb
+pretrained_checkpoints/*
+env.yaml
